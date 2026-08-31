@@ -45,6 +45,10 @@ Panel {
   property var selectedPath: []
   property bool renaming: false
 
+  // Briefly shown after Save, so the button gives an acknowledgement rather
+  // than closing on you or doing nothing visible.
+  property bool savedHint: false
+
   // What we last wrote, so the change notification our own save triggers does
   // not bounce back and overwrite an edit made in the meantime.
   property string lastWritten: ""
@@ -107,6 +111,7 @@ Panel {
       seeded.workspaces["1"] = Model.emptyWorkspace()
       next.profiles.push(seeded)
       next.activeProfile = seeded.id
+      next.loginProfile = seeded.id
       store = next
       persistNow()
     } else {
@@ -184,6 +189,10 @@ Panel {
     profile.workspaces["1"] = Model.emptyWorkspace()
     next.profiles.push(profile)
     next.activeProfile = profile.id
+    // On by default: the first profile becomes the login profile, and so does a
+    // new one added after the box was unticked for every other. Switching which
+    // profile runs at login is still a deliberate tick on its chip.
+    if (!next.loginProfile) next.loginProfile = profile.id
     commit(next)
 
     activeId = profile.id
@@ -222,16 +231,16 @@ Panel {
 
   // -------------------------------------------------------------- actions
 
+  // Saving is all this does. The editor lays a profile out; it does not
+  // rearrange the desktop you are working on. The profile opens on its own at
+  // your next login, the way an i3 config takes hold when i3 restarts. To build
+  // it into the running session there is the bar icon's right click, or a
+  // keybinding of your own — both deliberate "do it now" gestures, made from
+  // outside the editor.
   function applyNow() {
-    if (!activeProfile) return
-    // Written before launching rather than on the debounce, so the script reads
-    // the layout that is on screen and not the one from a moment ago.
     persistNow()
-
-    var argv = [root.applyScript, "--profile", String(activeId)]
-    if (!notifyOnApply) argv.push("--no-notify")
-    Util.execArgv(argv)
-    root.close()
+    savedHint = true
+    savedHintTimer.restart()
   }
 
   // Checks every app starts, on a hidden workspace, then closes what it opened
@@ -366,6 +375,12 @@ Panel {
     id: saveDebounce
     interval: 400
     onTriggered: root.persistNow()
+  }
+
+  Timer {
+    id: savedHintTimer
+    interval: 2600
+    onTriggered: root.savedHint = false
   }
 
   // --------------------------------------------------------------- the UI
@@ -518,7 +533,17 @@ Panel {
 
             Text {
               anchors.verticalCenter: parent.verticalCenter
-              visible: root.hasTestResult
+              visible: root.savedHint
+              text: root.store.loginProfile === root.activeId
+                ? "Saved — opens at your next login" : "Saved"
+              color: Util.alpha(Color.foreground, 0.6)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.hasTestResult && !root.savedHint
               text: root.testSummary
               color: root.testResult && root.testResult.failed > 0
                 ? Color.urgent : Util.alpha(Color.foreground, 0.6)
@@ -536,7 +561,8 @@ Panel {
             }
 
             Button {
-              text: "Apply now"
+              text: "Save"
+              tooltipText: "Save this profile. It opens on its own at your next login"
               bordered: true
               foreground: Color.accent
               horizontalPadding: Style.space(11)

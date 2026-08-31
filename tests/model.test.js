@@ -232,6 +232,21 @@ test("a fresh install ships no apps at all", () => {
     "and nothing would launch at login")
 })
 
+test("the login profile is on by default and stays off once turned off", () => {
+  // A store that never named a login profile adopts the active one — opening a
+  // profile at login is the point of the plugin.
+  const fresh = M.normalizeStore({ activeProfile: "day", profiles: [{ id: "day", name: "Day" }] })
+  assert.strictEqual(fresh.loginProfile, "day", "an unnamed login profile defaults to the active one")
+
+  // An explicit "" is the unticked box, and it is kept.
+  const off = M.normalizeStore({ activeProfile: "day", loginProfile: "", profiles: [{ id: "day", name: "Day" }] })
+  assert.strictEqual(off.loginProfile, "", "an explicit empty login profile is kept")
+
+  // A login profile pointing at a profile that is gone falls back to the active one.
+  const stale = M.normalizeStore({ activeProfile: "day", loginProfile: "gone", profiles: [{ id: "day", name: "Day" }] })
+  assert.strictEqual(stale.loginProfile, "day", "a stale login profile falls back")
+})
+
 test("profile ids stay unique", () => {
   const store = M.normalizeStore({ profiles: [{ id: "work", name: "Work" }] })
   assert.strictEqual(M.uniqueProfileId(store, "Work"), "work-2")

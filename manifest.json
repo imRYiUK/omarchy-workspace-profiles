@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.imryiuk.workspace-profiles",
   "name": "Workspace Profiles",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "imRYiUK",
   "license": "MIT",
   "description": "Preset your session. Pick the apps for each workspace and drag out the tiling layout they should open into, then have the whole thing build itself when you log in.",

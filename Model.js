@@ -391,14 +391,21 @@ function normalizeStore(raw) {
   for (var i = 0; i < list.length; i++) store.profiles.push(normalizeProfile(list[i]))
 
   store.activeProfile = String(raw.activeProfile || "")
-  store.loginProfile = String(raw.loginProfile || "")
 
   // A selection pointing at a profile that no longer exists would leave the
   // panel with nothing to show, so fall back to the first one.
   if (!profileById(store, store.activeProfile))
     store.activeProfile = store.profiles.length ? store.profiles[0].id : ""
-  if (!profileById(store, store.loginProfile))
-    store.loginProfile = ""
+
+  // The plugin is here to open a profile at login, so that is the default. A
+  // store that never named a login profile — a fresh seed, or one written
+  // before this default existed — adopts the active one. An explicit "" is the
+  // choice the panel writes when the box is unticked, and it is kept as-is.
+  store.loginProfile = ("loginProfile" in raw)
+    ? String(raw.loginProfile || "")
+    : store.activeProfile
+  if (store.loginProfile && !profileById(store, store.loginProfile))
+    store.loginProfile = store.activeProfile
 
   return store
 }

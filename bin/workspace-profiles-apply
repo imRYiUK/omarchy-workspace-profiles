@@ -86,7 +86,37 @@ notify_send() {
   ((notify)) || return 0
   ((dry_run)) && { log "notify: $1 — ${2:-}"; return 0; }
   command -v omarchy-notification-send >/dev/null 2>&1 || return 0
-  omarchy-notification-send -g "$GLYPH" "$1" "${2:-}" >/dev/null 2>&1 || true
+  local -a replace=()
+  # Land on the progress toast if one is up, so the build ends on the same
+  # notification it was reporting into rather than stacking a second.
+  [[ -n ${progress_id:-} ]] && replace=(-r "$progress_id")
+  omarchy-notification-send -g "$GLYPH" "${replace[@]}" "$1" "${2:-}" >/dev/null 2>&1 || true
+}
+
+# One toast that updates in place as the build moves from app to app. A profile
+# opening eight windows takes a few seconds per app, and without this the
+# desktop just sits there — someone watching cannot tell a slow launch from
+# nothing happening. The id from the first send is reused to replace it.
+progress_id=""
+notify_step() {
+  ((notify)) || return 0
+  ((dry_run)) && { log "step: $1 — ${2:-}"; return 0; }
+  command -v omarchy-notification-send >/dev/null 2>&1 || return 0
+  local id
+  id="$(omarchy-notification-send -g "$GLYPH" -r "${progress_id:-0}" -p "$1" "${2:-}" 2>/dev/null || true)"
+  [[ $id =~ ^[0-9]+$ ]] && progress_id="$id"
+}
+
+# The desktop entry's Name, for a line a person reads; the id if there is none.
+app_display_name() {
+  local file name
+  file="$(desktop_file_for "$1")" || { printf '%s' "$1"; return 0; }
+  name="$(awk '
+    /^\[Desktop Entry\]/ { in_entry = 1; next }
+    /^\[/                { in_entry = 0 }
+    in_entry && /^Name=/ { sub(/^Name=/, ""); print; exit }
+  ' "$file")"
+  printf '%s' "${name:-$1}"
 }
 
 # Seconds since the compositor started, or nothing if that cannot be read — in
@@ -418,6 +448,8 @@ build_workspace() {
       dispatch "hl.dsp.layout(\"preselect $dir\")"
     fi
 
+    notify_step "$profile_name is opening" "$(app_display_name "$app") on workspace $ws…"
+
     before="$(clients_on "$ws")"
     launch_app "$app" "$args"
 
@@ -533,7 +565,7 @@ for ws in $workspaces; do
   # Announced on the first workspace there is actually something to do on: a
   # profile whose workspaces are all open already sets nothing up, and saying
   # so twice over is two notifications for a no-op.
-  ((${#built[@]})) || notify_send "Workspace Profiles" "Setting up your preset spaces…"
+  ((${#built[@]})) || notify_step "Workspace Profiles" "Setting up your preset spaces…"
 
   build_workspace "$ws" "$tree"
   built+=("$ws")

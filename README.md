@@ -95,12 +95,16 @@ than it is tall becomes two columns, a taller one becomes two rows. So a third
 app dropped beside two columns lands under one of them rather than making a
 third thin column.
 
-**Apply now** builds the profile immediately. So does a right click on the bar
-icon, which is the quicker way once a profile is set up.
+**Save** writes the profile down. It does not touch the desktop you are on —
+the layout opens on its own at your next login, the way an i3 config takes hold
+when i3 restarts. To build it into the running session there and then, right
+click the bar icon, or bind a key (below); both are deliberate, made from
+outside the editor. Edits are also saved on their own a moment after you make
+them, so Save is really just the "and I mean it" button.
 
 Keyboard, while the editor is open: `1`–`5` switch workspace, arrows move
 between panes, `s` and `S` split the selected pane, `x` removes it, `/` jumps to
-the search box, `a` applies the profile, `Esc` closes.
+the search box, `a` saves, `Esc` closes.
 
 ### Test
 
@@ -123,7 +127,12 @@ window, and tells you it happened.
 
 ### At login
 
-Tick **Open this profile when I log in**. It applies once per login, and only
+**Open this profile when I log in** is ticked by default — a profile is made to
+be opened for you, so a new one takes that job straight away. Untick it on a
+profile you only ever apply by hand, or tick it on another to move the job
+there; the dot on the chip always shows which profile has it.
+
+It applies once per login, and only
 at one — a login run has to reach a Hyprland that started in the last two
 minutes, so nothing opens by surprise. That is what makes enabling the plugin,
 or an `omarchy-restart-shell` at four in the afternoon, a no-op: the service
