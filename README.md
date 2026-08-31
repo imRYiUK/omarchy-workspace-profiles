@@ -45,8 +45,15 @@ omarchy plugin remove io.github.imryiuk.workspace-profiles
 - **Arguments** for the selected pane go in the field under the canvas. This is
   what turns "open Chromium" into "open Chromium on google.com", and it takes
   ordinary command-line arguments, so `-e btop` works on a terminal.
-- **End up on** picks the workspace you are left looking at once everything has
-  opened.
+- **Launch order** along the bottom is the order the workspaces get built in,
+  and the first of them is where you are left once everything has opened. Hover
+  a workspace to move it with `‹` and `›`.
+
+Clicking an app onto a pane that already has one **splits** the pane and puts
+the new app on the right, rather than replacing what was there. A pane you
+already filled is a decision you made; losing it to a mis-click would be worse
+than an extra divider. To actually replace an app, remove the pane with `✕` and
+place the new one.
 
 **Apply now** builds the profile immediately. So does a right click on the bar
 icon, which is the quicker way once a profile is set up.
@@ -54,6 +61,25 @@ icon, which is the quicker way once a profile is set up.
 Keyboard, while the editor is open: `1`–`5` switch workspace, arrows move
 between panes, `s` and `S` split the selected pane, `x` removes it, `/` jumps to
 the search box, `a` applies the profile, `Esc` closes.
+
+### Test
+
+**Test** answers one question per pane: does this app, with these arguments,
+actually open a window? Wrong arguments are the failure worth catching — a
+browser given a malformed URL, a terminal given a command that is not installed
+— and otherwise they only show up at your next login.
+
+It runs **out of sight**. Every app is started on a special workspace, which
+Hyprland only renders while it is toggled open, so the windows really open, are
+really checked, and are really closed again without the desktop you are looking
+at changing at all. Each pane then carries a ✓ or a `!`, and a notification
+gives the tally.
+
+One case surfaces: an app that is **already running** and only ever has one
+process — Nautilus, most browsers — does not start a new process for Hyprland's
+workspace rule to catch. The running copy is asked for a window and opens it
+wherever you are. The test notices, still counts it as working, closes the
+window, and tells you it happened.
 
 ### At login
 
@@ -82,6 +108,7 @@ o.bind("SUPER + ALT + P", "Edit workspace profiles", "omarchy-shell io.github.im
 | `omarchy-shell workspace-profiles apply <id>` | apply a profile by id |
 | `omarchy-shell workspace-profiles applyActive` | apply the selected profile |
 | `omarchy-shell workspace-profiles applyLogin` | the login run, marker check included |
+| `bin/workspace-profiles-apply --profile <id> --test` | check every app starts, out of sight |
 | `omarchy-shell io.github.imryiuk.workspace-profiles toggle` | open or close the editor |
 
 ## Bar settings
@@ -134,6 +161,7 @@ anything.
 |---|---|
 | `~/.config/omarchy/workspace-profiles/profiles.json` | your profiles |
 | `$XDG_RUNTIME_DIR/omarchy-workspace-profiles/applied` | the once-per-login marker |
+| `$XDG_RUNTIME_DIR/omarchy-workspace-profiles/test-result.json` | the last test run |
 
 `profiles.json` is plain and hand-editable. A layout is a binary tree, the same
 shape as dwindle's:
@@ -146,7 +174,7 @@ shape as dwindle's:
   "profiles": [{
     "id": "morning",
     "name": "Morning",
-    "focusWorkspace": 1,
+    "sequence": [1],
     "workspaces": {
       "1": { "root": {
         "type": "split", "dir": "v", "ratio": 0.62,
@@ -160,7 +188,8 @@ shape as dwindle's:
 ```
 
 `dir` is `"v"` for side by side and `"h"` for stacked; `ratio` is the share
-taken by child `a`; `app` is a desktop entry id.
+taken by child `a`; `app` is a desktop entry id. `sequence` is the order the
+workspaces are built in — leave it out and they are built in numeric order.
 
 ## Requirements
 
@@ -187,6 +216,7 @@ the layout half:
 
 ```bash
 bin/workspace-profiles-apply --profile morning --dry-run   # print the plan
+bin/workspace-profiles-apply --profile morning --test      # check the apps start
 bin/workspace-profiles-apply --profile morning             # actually build it
 ```
 

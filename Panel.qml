@@ -28,6 +28,10 @@ Panel {
   readonly property string home: Quickshell.env("HOME")
   readonly property string storeDir: home + "/.config/omarchy/workspace-profiles"
   readonly property string storePath: storeDir + "/profiles.json"
+  // Cleared by the system at logout, which is exactly the lifetime a test
+  // result and the once-per-login marker both want.
+  readonly property string runtimeDir:
+    (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/omarchy-workspace-profiles"
 
   readonly property string pluginDir: decodeURIComponent(
     String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/$/, ""))
@@ -54,6 +58,35 @@ Panel {
     && String(selectedNode.app || "") !== ""
 
   readonly property bool notifyOnApply: setting("notify", true) !== false
+
+  // The last test run, if it was of the profile currently on screen. Cleared on
+  // any edit: once the layout changes, a previous run says nothing about it.
+  property var testResult: null
+  readonly property bool hasTestResult: !!testResult && testResult.profile === activeId
+
+  // { "<paneKey>": true|false } for the workspace being edited, which is what
+  // puts the tick or the warning on each pane.
+  readonly property var testPanesForWorkspace: {
+    var map = ({})
+    if (!hasTestResult || !testResult.panes) return map
+    var prefix = String(currentWorkspace) + ":"
+    for (var i = 0; i < testResult.panes.length; i++) {
+      var entry = testResult.panes[i]
+      var key = String(entry.key || "")
+      if (key.indexOf(prefix) === 0) map[key.slice(prefix.length)] = entry.ok === true
+    }
+    return map
+  }
+
+  readonly property var launchOrder: activeProfile && activeProfile.sequence
+    ? activeProfile.sequence : []
+
+  readonly property string testSummary: {
+    if (!hasTestResult) return ""
+    var total = testResult.ok + testResult.failed
+    if (testResult.failed === 0) return "all " + total + " opened"
+    return testResult.failed + " of " + total + " did not start"
+  }
 
   // ------------------------------------------------------------- the store
 
@@ -99,6 +132,7 @@ Panel {
   // only re-evaluates a `var` binding on reassignment) and queue a save.
   function commit(next) {
     store = next
+    testResult = null
     persist()
   }
 
@@ -108,7 +142,14 @@ Panel {
 
     var next = JSON.parse(JSON.stringify(store))
     fn(next.profiles[index])
+    // The launch order can never name a workspace with nothing on it, or miss
+    // one that has something, whatever the edit was.
+    Model.syncSequence(next.profiles[index])
     commit(next)
+  }
+
+  function moveWorkspace(workspaceId, delta) {
+    withProfile(function(profile) { Model.moveInSequence(profile, workspaceId, delta) })
   }
 
   function setTree(tree) {
@@ -179,10 +220,6 @@ Panel {
     commit(next)
   }
 
-  function setFocusWorkspace(id) {
-    withProfile(function(profile) { profile.focusWorkspace = id })
-  }
-
   // -------------------------------------------------------------- actions
 
   function applyNow() {
@@ -195,6 +232,26 @@ Panel {
     if (!notifyOnApply) argv.push("--no-notify")
     Util.execArgv(argv)
     root.close()
+  }
+
+  // Checks every app starts, on a hidden workspace, then closes what it opened
+  // and notifies. Nothing on screen changes while it runs.
+  function testNow() {
+    if (!activeProfile) return
+    persistNow()
+    testResult = null
+
+    var argv = [root.applyScript, "--profile", String(activeId), "--test"]
+    if (!notifyOnApply) argv.push("--no-notify")
+    Util.execArgv(argv)
+  }
+
+  function loadTestResult(raw) {
+    try {
+      testResult = raw && raw.length ? JSON.parse(raw) : null
+    } catch (e) {
+      testResult = null
+    }
   }
 
   // ----------------------------------------------------------- app lookup
@@ -293,6 +350,16 @@ Panel {
     onLoaded: root.loadFromText(text())
     onFileChanged: reload()
     onLoadFailed: root.loadFromText("")
+  }
+
+  FileView {
+    id: testResultFile
+    path: root.runtimeDir + "/test-result.json"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.loadTestResult(text())
+    onFileChanged: reload()
+    onLoadFailed: root.testResult = null
   }
 
   Timer {
@@ -449,6 +516,25 @@ Panel {
               onClicked: root.deleteProfile()
             }
 
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.hasTestResult
+              text: root.testSummary
+              color: root.testResult && root.testResult.failed > 0
+                ? Color.urgent : Util.alpha(Color.foreground, 0.6)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+
+            Button {
+              text: "Test"
+              tooltipText: "Start every app out of sight, check it opens, then close it again"
+              visible: !root.renaming
+              horizontalPadding: Style.space(9)
+              verticalPadding: Style.space(3)
+              onClicked: root.testNow()
+            }
+
             Button {
               text: "Apply now"
               bordered: true
@@ -566,6 +652,7 @@ Panel {
             selectedPath: root.selectedPath
             dragLayer: dragLayer
             appLookup: root.appEntry
+            testPanes: root.testPanesForWorkspace
 
             onTreeEdited: function(next) { root.setTree(next) }
             onSelectionChanged: function(path) { root.selectedPath = path }
@@ -682,44 +769,93 @@ Panel {
 
             Text {
               anchors.verticalCenter: parent.verticalCenter
-              text: "End up on"
+              text: root.launchOrder.length > 1 ? "Launch order — you end up on the first" : "Launch order"
               color: Util.alpha(Color.foreground, 0.7)
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
             }
 
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.launchOrder.length === 0
+              text: "nothing set up yet"
+              color: Util.alpha(Color.foreground, 0.4)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+
+            // The workspaces this profile builds, in the order it builds them.
+            // The arrows only appear under the pointer, so at rest the row
+            // reads as a plain sequence rather than a control panel.
             Repeater {
-              model: Model.WORKSPACES
+              model: root.launchOrder
 
               Rectangle {
-                id: focusChoice
-                required property int modelData
+                id: orderChip
+                required property int index
+                required property var modelData
 
-                readonly property bool current: !!root.activeProfile
-                  && root.activeProfile.focusWorkspace === focusChoice.modelData
+                readonly property bool current: modelData === root.currentWorkspace
+                readonly property bool first: orderChip.index === 0
+                readonly property bool last: orderChip.index === root.launchOrder.length - 1
 
                 anchors.verticalCenter: parent.verticalCenter
-                width: Style.space(20)
+                width: Style.space(40)
                 height: Style.space(20)
                 radius: Style.cornerRadius > 0 ? Style.space(4) : 0
-                color: Util.alpha(Color.foreground, focusChoice.current ? 0.16 : (focusMouse.containsMouse ? 0.08 : 0.02))
+                color: Util.alpha(Color.foreground, orderChip.current ? 0.16 : (chipHover.containsMouse ? 0.08 : 0.02))
                 border.width: 1
-                border.color: focusChoice.current ? Util.alpha(Color.accent, 0.8) : Util.alpha(Color.foreground, 0.1)
+                border.color: orderChip.current ? Util.alpha(Color.accent, 0.8) : Util.alpha(Color.foreground, 0.1)
 
                 Text {
                   anchors.centerIn: parent
-                  text: String(focusChoice.modelData)
+                  text: String(orderChip.modelData)
                   color: Color.foreground
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
                 }
 
                 MouseArea {
-                  id: focusMouse
+                  id: chipHover
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: root.setFocusWorkspace(focusChoice.modelData)
+                  onClicked: {
+                    root.currentWorkspace = orderChip.modelData
+                    root.selectedPath = []
+                  }
+                }
+
+                Repeater {
+                  model: [
+                    { glyph: "‹", delta: -1, atEdge: orderChip.first },
+                    { glyph: "›", delta: 1,  atEdge: orderChip.last }
+                  ]
+
+                  Text {
+                    id: arrow
+                    required property var modelData
+
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.left: arrow.modelData.delta < 0 ? parent.left : undefined
+                    anchors.right: arrow.modelData.delta < 0 ? undefined : parent.right
+                    anchors.margins: Style.space(3)
+                    visible: chipHover.containsMouse && !arrow.modelData.atEdge
+                    text: arrow.modelData.glyph
+                    color: arrowMouse.containsMouse ? Color.accent : Util.alpha(Color.foreground, 0.7)
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.bodySmall
+
+                    MouseArea {
+                      id: arrowMouse
+                      anchors.centerIn: parent
+                      width: Style.space(13)
+                      height: parent.height
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.moveWorkspace(orderChip.modelData, arrow.modelData.delta)
+                    }
+                  }
                 }
               }
             }

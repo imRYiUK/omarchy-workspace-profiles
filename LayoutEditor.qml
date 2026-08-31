@@ -25,6 +25,8 @@ Item {
   property var dragLayer: null
   // function(desktopId) -> DesktopEntry or null, supplied by the panel.
   property var appLookup: null
+  // { "<paneKey>": true|false } from the last test run of this workspace.
+  property var testPanes: ({})
 
   readonly property string selectedKey: selectedPath.join(".")
   readonly property int gap: Style.space(5)
@@ -71,9 +73,18 @@ Item {
     treeEdited(Model.setRatioAt(tree, path, ratio))
   }
 
+  // An empty pane takes the app; a pane that already has one is split and the
+  // app lands on the right, so a click never costs you a pane you had set up.
+  // Selection follows the app to wherever it ended up.
   function assign(path, appId) {
-    treeEdited(Model.setAppAt(tree, path, appId))
-    selectionChanged(path.slice())
+    var result = Model.assignApp(tree, path, appId)
+    treeEdited(result.tree)
+    selectionChanged(result.path)
+  }
+
+  function testState(key) {
+    if (!testPanes || testPanes[key] === undefined) return ""
+    return testPanes[key] ? "ok" : "failed"
   }
 
   function setArgs(path, args) {

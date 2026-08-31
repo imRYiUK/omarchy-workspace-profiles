@@ -23,10 +23,18 @@ readonly GLYPH="󰙀"
 STORE="${WORKSPACE_PROFILES_STORE:-$HOME/.config/omarchy/workspace-profiles/profiles.json}"
 MARKER_DIR="${XDG_RUNTIME_DIR:-/tmp}/omarchy-workspace-profiles"
 MARKER="$MARKER_DIR/applied"
+RESULT="$MARKER_DIR/test-result.json"
+
+# A special workspace is only rendered while it is toggled open, so a window
+# that opens on one never reaches the screen. That is what makes a test run
+# invisible: the apps really start, really map a window, and are really closed,
+# without the desktop the user is looking at changing at all.
+readonly TEST_WORKSPACE="special:workspace-profiles-test"
 
 profile_id=""
 boot_mode=0
 dry_run=0
+test_mode=0
 notify=1
 window_timeout=15
 
@@ -38,6 +46,7 @@ Usage: workspace-profiles-apply [options]
   --boot           login run: write the once-per-boot marker first, and only
                    touch workspaces that are still empty
   --dry-run        print what would happen, touch nothing
+  --test           check every app starts, out of sight, then clean up
   --no-notify      no desktop notifications
   --store <path>   profiles.json to read (default: the plugin's store)
   --timeout <sec>  how long to wait for a launched window (default: 15)
@@ -52,6 +61,7 @@ while (($#)); do
     --timeout) window_timeout="${2:-}"; shift 2 || usage ;;
     --boot) boot_mode=1; shift ;;
     --dry-run) dry_run=1; shift ;;
+    --test) test_mode=1; shift ;;
     --no-notify) notify=0; shift ;;
     -h | --help) usage ;;
     *) echo "workspace-profiles-apply: unknown argument '$1'" >&2; usage ;;
@@ -87,6 +97,27 @@ dispatch() {
 clients_on() {
   hyprctl clients -j 2>/dev/null | jq -r --argjson ws "$1" \
     '.[] | select(.workspace.id == $ws) | .address'
+}
+
+# Addresses of the windows on a workspace named rather than numbered — special
+# workspaces have negative, assigned-on-demand ids.
+clients_on_named() {
+  hyprctl clients -j 2>/dev/null | jq -r --arg name "$1" \
+    '.[] | select(.workspace.name == $name) | .address'
+}
+
+# Every window in the session, not just one workspace.
+all_addresses() {
+  hyprctl clients -j 2>/dev/null | jq -r '.[].address'
+}
+
+workspace_name_of() {
+  hyprctl clients -j 2>/dev/null | jq -r --arg a "$1" \
+    '.[] | select(.address == $a) | .workspace.name'
+}
+
+close_window() {
+  hyprctl dispatch "hl.dsp.window.close({ window = \"address:$1\" })" >/dev/null 2>&1
 }
 
 # "<width> <height>" for one window, empty if it is gone.
@@ -128,46 +159,67 @@ desktop_exec() {
 # arguments we go through the Exec line instead: gtk-launch treats what follows
 # the desktop id as files to open, so `alacritty -e btop` would arrive as two
 # filenames rather than a flag and its value.
-launch_app() {
+# Fills LAUNCH_ARGV with the command for one pane.
+build_argv() {
   local id="$1" args="${2:-}"
-  local -a argv
+  LAUNCH_ARGV=()
 
   if [[ -z $args ]]; then
-    argv=(gtk-launch "$id.desktop")
-  else
-    local exec_line
-    if exec_line="$(desktop_exec "$id")" && [[ -n $exec_line ]]; then
-      # The Exec line is shell-quoted by the spec and the arguments are the
-      # user's own, so let the shell split both the way a terminal would.
-      if ! eval "argv=($exec_line $args)" 2>/dev/null; then
-        log "  ! could not parse Exec for $id, falling back to gtk-launch"
-        argv=(gtk-launch "$id.desktop")
-      fi
-    else
-      log "  ! no desktop entry for $id, falling back to gtk-launch"
-      argv=(gtk-launch "$id.desktop")
-    fi
+    LAUNCH_ARGV=(gtk-launch "$id.desktop")
+    return 0
   fi
 
+  local exec_line
+  if exec_line="$(desktop_exec "$id")" && [[ -n $exec_line ]]; then
+    # The Exec line is shell-quoted by the spec and the arguments are the
+    # user's own, so let the shell split both the way a terminal would.
+    if ! eval "LAUNCH_ARGV=($exec_line $args)" 2>/dev/null; then
+      log "  ! could not parse Exec for $id, falling back to gtk-launch"
+      LAUNCH_ARGV=(gtk-launch "$id.desktop")
+    fi
+  else
+    log "  ! no desktop entry for $id, falling back to gtk-launch"
+    LAUNCH_ARGV=(gtk-launch "$id.desktop")
+  fi
+}
+
+launch_app() {
+  build_argv "$1" "${2:-}"
+
   if ((dry_run)); then
-    log "  launch    uwsm-app -- ${argv[*]}"
+    log "  launch    uwsm-app -- ${LAUNCH_ARGV[*]}"
     return 0
   fi
 
   # Under uwsm-app so the app lands in app-graphical.slice instead of
   # inheriting this script's unit, matching how Omarchy launches everything else.
-  setsid -f uwsm-app -- "${argv[@]}" >/dev/null 2>&1
+  setsid -f uwsm-app -- "${LAUNCH_ARGV[@]}" >/dev/null 2>&1
+}
+
+# Launch onto the hidden test workspace. This one goes through Hyprland's own
+# exec rather than setsid, because only Hyprland can tie a workspace rule to the
+# process it spawned — that rule is what keeps the window off the screen.
+launch_app_hidden() {
+  build_argv "$1" "${2:-}"
+
+  local command="uwsm-app -- ${LAUNCH_ARGV[*]}"
+  # The command goes inside a Lua long string, which processes no escapes at
+  # all; the one sequence that could end it early is stripped.
+  command="${command//]]/}"
+
+  hyprctl dispatch "hl.dsp.exec_cmd([[$command]], { workspace = \"$TEST_WORKSPACE\" })" >/dev/null 2>&1
 }
 
 # Wait for a window to show up on a workspace that was not there before.
 # Prints its address. Polling rather than following socket2 keeps this to jq
 # and hyprctl, and 80ms is well inside the time any app takes to map.
 wait_for_window() {
-  local ws="$1" before="$2"
-  local deadline=$((SECONDS + window_timeout)) now new
+  local ws="$1" before="$2" timeout="${3:-$window_timeout}"
+  local deadline=$((SECONDS + timeout)) now new
 
   while ((SECONDS < deadline)); do
-    now="$(clients_on "$ws")"
+    if [[ $ws == special:* ]]; then now="$(clients_on_named "$ws")"
+    else now="$(clients_on "$ws")"; fi
     new="$(comm -13 <(sort <<<"$before") <(sort <<<"$now") 2>/dev/null | head -1)"
     [[ -n $new ]] && { printf '%s' "$new"; return 0; }
     sleep 0.08
@@ -206,6 +258,109 @@ apply_ratio() {
       dispatch "hl.dsp.window.resize({ window = \"address:$first\", x = 0, y = $delta, relative = true })"
     fi
   done
+}
+
+# Wait for any new window anywhere, and say where it landed.
+#
+# Watching the whole session rather than only the test workspace is what makes
+# the result trustworthy for single-instance apps. Launching Nautilus while
+# Nautilus is running does not start a process that a workspace rule can catch —
+# the running one is asked to open a window, and it opens it wherever the user
+# is. Watching only the hidden workspace would call that a failure when the app
+# started perfectly well.
+wait_for_test_window() {
+  local before="$1" timeout="${2:-10}"
+  local deadline=$((SECONDS + timeout)) now new
+
+  while ((SECONDS < deadline)); do
+    now="$(all_addresses)"
+    new="$(comm -13 <(sort <<<"$before") <(sort <<<"$now") 2>/dev/null | head -1)"
+    [[ -n $new ]] && { printf '%s' "$new"; return 0; }
+    sleep 0.08
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------- testing
+#
+# Answers one question per pane: does this app, with these arguments, actually
+# open a window? Wrong arguments are the failure this catches — a browser given
+# a malformed URL, a terminal given a command that is not installed — and they
+# are exactly the kind that only shows up at the next login otherwise.
+#
+# The layout is not rebuilt. Every app is started on the hidden test workspace,
+# waited for, and closed again, so the desktop the user is looking at never
+# changes and the test can be run mid-session without costing them anything.
+run_test() {
+  local profile="$1" profile_name="$2" workspaces="$3"
+  local ws tree plan op from pane dir ratio app args before addr
+  local ok=0 bad=0
+  local -a opened=() failures=() surfaced=() results=()
+
+  log "testing '$profile_name' out of sight on $TEST_WORKSPACE"
+
+  for ws in $workspaces; do
+    tree="$(jq -c --arg w "$ws" '.workspaces[$w]' <<<"$profile")"
+    [[ -z $tree || $tree == null ]] && continue
+
+    plan="$(jq -r -f "$PLAN_JQ" <<<"$tree" 2>/dev/null)" || continue
+    [[ -z $plan ]] && continue
+
+    while IFS=$'\t' read -r op from pane dir ratio app args; do
+      [[ -z ${op:-} ]] && continue
+
+      before="$(all_addresses)"
+      launch_app_hidden "$app" "$args"
+
+      if addr="$(wait_for_test_window "$before" 10)"; then
+        local where hidden
+        where="$(workspace_name_of "$addr")"
+        if [[ $where == "$TEST_WORKSPACE" ]]; then
+          hidden=true
+        else
+          hidden=false
+          surfaced+=("$app")
+          log "  ok   $app${args:+ $args}  (already running — its window opened on $where)"
+        fi
+
+        opened+=("$addr")
+        results+=("$(jq -nc --arg k "$ws:$pane" --arg a "$app" --argjson hidden "$hidden" \
+          '{key: $k, app: $a, ok: true, hidden: $hidden}')")
+        ((ok++))
+        [[ $hidden == true ]] && log "  ok   $app${args:+ $args}"
+      else
+        results+=("$(jq -nc --arg k "$ws:$pane" --arg a "$app" '{key: $k, app: $a, ok: false, hidden: true}')")
+        failures+=("$app")
+        ((bad++))
+        log "  FAIL $app${args:+ $args}"
+      fi
+    done <<<"$plan"
+  done
+
+  # Only the windows this run opened are closed. Anything else that wandered
+  # onto the test workspace is somebody else's.
+  for addr in ${opened[@]+"${opened[@]}"}; do close_window "$addr"; done
+
+  mkdir -p "$MARKER_DIR" 2>/dev/null
+  printf '%s' "$(jq -nc \
+    --arg profile "$(jq -r '.id' <<<"$profile")" \
+    --argjson ok "$ok" --argjson failed "$bad" \
+    --argjson panes "$(printf '%s\n' ${results[@]+"${results[@]}"} | jq -sc '.')" \
+    '{profile: $profile, at: (now | floor), ok: $ok, failed: $failed, panes: $panes}')" >"$RESULT"
+
+  local aside=""
+  if ((${#surfaced[@]})); then
+    aside=" $(printf '%s, ' "${surfaced[@]}" | sed 's/, $//') was already running, so its window opened on screen for a moment."
+  fi
+
+  if ((bad == 0)); then
+    notify_send "$profile_name works" "All $ok opened, and the test windows are closed again.$aside"
+  else
+    notify_send "$profile_name: $bad of $((ok + bad)) did not start" \
+      "$(printf '%s, ' "${failures[@]}" | sed 's/, $//') never opened a window. Check the app and its arguments.$aside"
+  fi
+
+  ((bad == 0))
 }
 
 # -------------------------------------------------------------- one workspace
@@ -297,8 +452,21 @@ profile="$(jq -c --arg id "$profile_id" '.profiles[]? | select(.id == $id)' <<<"
 [[ -z $profile ]] && die "no profile called '$profile_id'"
 
 profile_name="$(jq -r '.name // .id' <<<"$profile")"
-workspaces="$(jq -r '.workspaces | keys_unsorted[]' <<<"$profile" 2>/dev/null | sort -n)"
+# The profile's sequence is the order the user put the workspaces in, and the
+# first of them is where they are left once everything has opened. A profile
+# written by hand may not have one, so fall back to numeric order.
+workspaces="$(jq -r '
+  (.workspaces | keys) as $configured
+  | (((.sequence // []) | map(tostring)) + ($configured | sort_by(tonumber)))
+  | reduce .[] as $w ([];
+      if ($configured | index($w)) and (index($w) == null) then . + [$w] else . end)
+  | .[]' <<<"$profile" 2>/dev/null)"
 [[ -z $workspaces ]] && { log "profile '$profile_name' has no workspaces"; exit 0; }
+
+if ((test_mode)); then
+  run_test "$profile" "$profile_name" "$workspaces"
+  exit $?
+fi
 
 # Claimed once there is real work to do, and before any of it happens: a second
 # shell start during the same login — an omarchy-restart-shell, a crash and a
@@ -333,8 +501,10 @@ for ws in $workspaces; do
   build_workspace "$ws" "$tree"
 done
 
-focus_ws="$(jq -r '.focusWorkspace // ""' <<<"$profile")"
-[[ -z $focus_ws || $focus_ws == null ]] && focus_ws="$original_ws"
+# You end up on the first workspace in the sequence: it is built first because
+# it is the one that matters most, so it is the one to be looking at.
+focus_ws="$(head -1 <<<"$workspaces")"
+[[ -z $focus_ws ]] && focus_ws="$original_ws"
 dispatch "hl.dsp.focus({ workspace = \"$focus_ws\" })"
 
 if ((${#skipped[@]})); then

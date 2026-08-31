@@ -42,6 +42,24 @@ test("editing returns a new tree rather than mutating the old one", () => {
   assert.notStrictEqual(tree, next)
 })
 
+// ---- placing an app
+
+test("clicking an app onto an empty pane fills it", () => {
+  const r = M.assignApp(leaf(""), [], "chromium")
+  assert.strictEqual(r.tree.type, "leaf")
+  assert.strictEqual(r.tree.app, "chromium")
+  assert.deepStrictEqual(r.path, [], "selection stays on the pane")
+})
+
+test("clicking an app onto a filled pane splits it instead of replacing it", () => {
+  const r = M.assignApp(leaf("chromium"), [], "foot")
+  assert.strictEqual(r.tree.type, "split")
+  assert.strictEqual(r.tree.dir, "v", "side by side")
+  assert.strictEqual(r.tree.a.app, "chromium", "what was there stays on the left")
+  assert.strictEqual(r.tree.b.app, "foot", "the new app goes on the right")
+  assert.deepStrictEqual(r.path, ["b"], "selection follows the app that was just placed")
+})
+
 // ---- removing
 
 test("removing a pane gives its space to its sibling", () => {
@@ -115,14 +133,35 @@ test("a divider carries the rectangle of the split it belongs to", () => {
     "so a pointer position converts straight back into a ratio")
 })
 
+// ---- launch order
+
+test("the sequence lists exactly the configured workspaces", () => {
+  const profile = M.normalizeProfile({
+    id: "p", name: "P", sequence: [3, 1],
+    workspaces: { "1": { root: leaf("a") }, "3": { root: leaf("b") }, "5": { root: leaf("c") } }
+  })
+  assert.deepStrictEqual(profile.sequence, [3, 1, 5], "the stored order is kept, new ones go on the end")
+})
+
+test("a workspace that has been emptied drops out of the sequence", () => {
+  const profile = { id: "p", name: "P", sequence: [1, 3], workspaces: { "1": { root: leaf("a") }, "3": { root: leaf("") } } }
+  assert.deepStrictEqual(M.syncSequence(profile).sequence, [1])
+})
+
+test("a workspace can be moved along the sequence", () => {
+  const profile = { sequence: [1, 3, 5], workspaces: {} }
+  assert.deepStrictEqual(M.moveInSequence({ sequence: [1, 3, 5] }, 5, -1).sequence, [1, 5, 3])
+  assert.deepStrictEqual(M.moveInSequence({ sequence: [1, 3, 5] }, 1, -1).sequence, [1, 3, 5], "already first")
+  assert.deepStrictEqual(M.moveInSequence({ sequence: [1, 3, 5] }, 5, 1).sequence, [1, 3, 5], "already last")
+})
+
 // ---- the store
 
 test("a store read off disk is coerced into shape", () => {
   const store = M.normalizeStore({
-    profiles: [{ id: "x", name: "X", focusWorkspace: 99, workspaces: { "1": { root: { type: "split", dir: "sideways", ratio: 7 } } } }],
+    profiles: [{ id: "x", name: "X", workspaces: { "1": { root: { type: "split", dir: "sideways", ratio: 7 } } } }],
     activeProfile: "gone"
   })
-  assert.strictEqual(store.profiles[0].focusWorkspace, 1, "an out-of-range workspace falls back")
   assert.strictEqual(store.profiles[0].workspaces["1"].root.dir, "v", "an unknown direction falls back")
   assert.strictEqual(store.profiles[0].workspaces["1"].root.ratio, 0.85, "an absurd ratio is clamped")
   assert.strictEqual(store.activeProfile, "x", "a selection pointing at nothing falls back to the first profile")

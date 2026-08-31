@@ -131,6 +131,30 @@ function removeAt(root, path) {
   return replaceAt(root, parentPath, clone(sibling))
 }
 
+// Putting an app on a pane. An empty pane takes it; a pane that already has one
+// is split side by side and the new app goes on the right, because the pane you
+// clicked is a place you already decided something belongs — losing it to a
+// mis-click would be worse than the extra divider.
+//
+// Returns both the new tree and where the app landed, so the caller can select
+// it: after a split that is a pane which did not exist a moment ago.
+function assignApp(root, path, appId) {
+  var target = nodeAt(root, path)
+  if (!target || isSplit(target)) return { tree: root, path: path }
+
+  if (String(target.app || "") === "")
+    return { tree: setAppAt(root, path, appId), path: path }
+
+  return {
+    tree: replaceAt(root, path, {
+      type: "split", dir: "v", ratio: 0.5,
+      a: clone(target),
+      b: leaf(appId)
+    }),
+    path: path.concat(["b"])
+  }
+}
+
 function setAppAt(root, path, app, args) {
   var target = nodeAt(root, path)
   if (!target || isSplit(target)) return root
@@ -242,7 +266,50 @@ function emptyWorkspace() {
 }
 
 function newProfile(id, name) {
-  return { id: id, name: name, focusWorkspace: 1, workspaces: {} }
+  return { id: id, name: name, sequence: [], workspaces: {} }
+}
+
+// The order the workspaces are built in, and with it the workspace you are left
+// looking at — the first one, since that is the one you put first.
+//
+// Kept as exactly the configured workspaces: the user's ordering is preserved,
+// anything newly filled goes on the end, and anything cleared drops out. Call
+// this after any edit to a profile and the sequence can never name a workspace
+// that has nothing on it, or miss one that does.
+function syncSequence(profile) {
+  var configured = {}
+  for (var i = 0; i < WORKSPACES.length; i++) {
+    var key = String(WORKSPACES[i])
+    if (isConfigured(profile.workspaces[key])) configured[key] = true
+  }
+
+  var next = []
+  var seen = {}
+  var previous = Array.isArray(profile.sequence) ? profile.sequence : []
+
+  for (var j = 0; j < previous.length; j++) {
+    var id = Number(previous[j])
+    var idKey = String(id)
+    if (configured[idKey] && !seen[idKey]) { next.push(id); seen[idKey] = true }
+  }
+  for (var k = 0; k < WORKSPACES.length; k++) {
+    var trailing = String(WORKSPACES[k])
+    if (configured[trailing] && !seen[trailing]) next.push(WORKSPACES[k])
+  }
+
+  profile.sequence = next
+  return profile
+}
+
+function moveInSequence(profile, workspaceId, delta) {
+  var sequence = Array.isArray(profile.sequence) ? profile.sequence.slice() : []
+  var from = sequence.indexOf(workspaceId)
+  var to = from + delta
+  if (from < 0 || to < 0 || to >= sequence.length) return profile
+
+  sequence.splice(to, 0, sequence.splice(from, 1)[0])
+  profile.sequence = sequence
+  return profile
 }
 
 function normalizeProfile(raw) {
@@ -250,15 +317,14 @@ function normalizeProfile(raw) {
     String((raw && raw.id) || "profile"),
     String((raw && raw.name) || (raw && raw.id) || "Profile"))
 
-  var focus = Number(raw && raw.focusWorkspace)
-  profile.focusWorkspace = WORKSPACES.indexOf(focus) >= 0 ? focus : 1
-
   var source = (raw && raw.workspaces) || {}
   for (var i = 0; i < WORKSPACES.length; i++) {
     var key = String(WORKSPACES[i])
     if (source[key]) profile.workspaces[key] = { root: normalizeNode(source[key].root) }
   }
-  return profile
+
+  profile.sequence = Array.isArray(raw && raw.sequence) ? raw.sequence : []
+  return syncSequence(profile)
 }
 
 function normalizeStore(raw) {
@@ -315,6 +381,7 @@ if (typeof module !== "undefined" && module.exports) {
     normalizeNode: normalizeNode, nodeAt: nodeAt, replaceAt: replaceAt, layoutRects: layoutRects,
     isAncestor: isAncestor, leafPaths: leafPaths, splitAt: splitAt, removeAt: removeAt,
     setAppAt: setAppAt, setArgsAt: setArgsAt, setRatioAt: setRatioAt, swap: swap,
+    assignApp: assignApp, syncSequence: syncSequence, moveInSequence: moveInSequence,
     filledLeaves: filledLeaves, isConfigured: isConfigured, workspaceSummary: workspaceSummary,
     emptyWorkspace: emptyWorkspace, newProfile: newProfile, normalizeProfile: normalizeProfile,
     normalizeStore: normalizeStore, profileById: profileById, profileIndex: profileIndex,

@@ -23,6 +23,8 @@ Item {
   readonly property bool filled: appId !== ""
   readonly property bool selected: !!host && !!pane && host.selectedKey === pane.key
   readonly property bool roomy: width > Style.space(70) && height > Style.space(40)
+  // "", "ok", or "failed" — the result for this pane from the last test run.
+  readonly property string testState: host && pane ? host.testState(pane.key) : ""
 
   Rectangle {
     anchors.fill: parent
@@ -37,6 +39,23 @@ Item {
 
     Behavior on color { ColorAnimation { duration: 110 } }
     Behavior on border.color { ColorAnimation { duration: 110 } }
+  }
+
+  // Selecting a pane, and dragging a filled one onto another to swap them.
+  MouseArea {
+    id: cardMouse
+    anchors.fill: parent
+    hoverEnabled: true
+    cursorShape: root.filled ? Qt.OpenHandCursor : Qt.PointingHandCursor
+    drag.target: root.filled ? paneProxy : null
+    onPressed: function(mouse) {
+      if (root.host) root.host.select(root.path)
+      if (!root.filled || !root.host || !root.host.dragLayer) return
+      var point = mapToItem(root.host.dragLayer, mouse.x, mouse.y)
+      paneProxy.x = point.x - paneProxy.width / 2
+      paneProxy.y = point.y - paneProxy.height / 2
+    }
+    onReleased: if (paneProxy.Drag.active) paneProxy.Drag.drop()
   }
 
   // Empty pane: says what to do with it rather than sitting there blank.
@@ -108,9 +127,36 @@ Item {
     }
   }
 
+  // Whether this app actually opened a window the last time the profile was
+  // tested. Sits opposite the hover controls so the two never overlap.
+  Rectangle {
+    visible: root.testState !== ""
+    anchors.top: parent.top
+    anchors.left: parent.left
+    anchors.margins: Style.space(4)
+    width: Style.space(18)
+    height: Style.space(18)
+    radius: width / 2
+    color: root.testState === "ok" ? Util.alpha(Color.foreground, 0.12) : Util.alpha(Color.urgent, 0.25)
+
+    Text {
+      anchors.centerIn: parent
+      text: root.testState === "ok" ? "✓" : "!"
+      color: root.testState === "ok" ? Color.foreground : Color.urgent
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+    }
+  }
+
   // Hover controls, top-right. Hidden until the pointer is on the pane so the
   // resting canvas stays a clean picture of the layout.
+  //
+  // Explicitly above the whole-card MouseArea. Among siblings the last one
+  // declared takes input first, so without this the card would swallow every
+  // click meant for these buttons — which is what it did before the MouseArea
+  // was moved above them.
   Row {
+    z: 1
     anchors.top: parent.top
     anchors.right: parent.right
     anchors.margins: Style.space(4)
@@ -160,23 +206,6 @@ Item {
         }
       }
     }
-  }
-
-  // Selecting a pane, and dragging a filled one onto another to swap them.
-  MouseArea {
-    id: cardMouse
-    anchors.fill: parent
-    hoverEnabled: true
-    cursorShape: root.filled ? Qt.OpenHandCursor : Qt.PointingHandCursor
-    drag.target: root.filled ? paneProxy : null
-    onPressed: function(mouse) {
-      if (root.host) root.host.select(root.path)
-      if (!root.filled || !root.host || !root.host.dragLayer) return
-      var point = mapToItem(root.host.dragLayer, mouse.x, mouse.y)
-      paneProxy.x = point.x - paneProxy.width / 2
-      paneProxy.y = point.y - paneProxy.height / 2
-    }
-    onReleased: if (paneProxy.Drag.active) paneProxy.Drag.drop()
   }
 
   // The thing that actually gets dragged. It lives in the panel's drag layer,
