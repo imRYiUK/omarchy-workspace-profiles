@@ -217,6 +217,21 @@ test("a store read off disk is coerced into shape", () => {
   assert.strictEqual(store.activeProfile, "x", "a selection pointing at nothing falls back to the first profile")
 })
 
+test("a fresh install ships no apps at all", () => {
+  // What the panel seeds when there is no profiles.json: one profile, one
+  // workspace, one empty pane. Nothing is preset — the canvas the user first
+  // sees is theirs to fill, and a suggested app would just be one to delete.
+  const store = M.normalizeStore(null)
+  assert.deepStrictEqual(store.profiles, [], "an absent store holds no profiles")
+
+  const seeded = M.newProfile("default", "Default")
+  seeded.workspaces["1"] = M.emptyWorkspace()
+  assert.strictEqual(M.filledLeaves(seeded.workspaces["1"].root), 0, "no app is preset")
+  assert.strictEqual(M.isConfigured(seeded.workspaces["1"]), false)
+  assert.deepStrictEqual(M.syncSequence(seeded).sequence, [],
+    "and nothing would launch at login")
+})
+
 test("profile ids stay unique", () => {
   const store = M.normalizeStore({ profiles: [{ id: "work", name: "Work" }] })
   assert.strictEqual(M.uniqueProfileId(store, "Work"), "work-2")
