@@ -514,10 +514,8 @@ if ((boot_mode)) && ((!dry_run)); then
   fi
 fi
 
-notify_send "Workspace Profiles" "Setting up your preset spaces…"
-
-original_ws="$(hyprctl activeworkspace -j 2>/dev/null | jq -r '.id // 1')"
 skipped=()
+built=()
 
 for ws in $workspaces; do
   tree="$(jq -c --arg w "$ws" '.workspaces[$w]' <<<"$profile")"
@@ -532,16 +530,33 @@ for ws in $workspaces; do
     continue
   fi
 
+  # Announced on the first workspace there is actually something to do on: a
+  # profile whose workspaces are all open already sets nothing up, and saying
+  # so twice over is two notifications for a no-op.
+  ((${#built[@]})) || notify_send "Workspace Profiles" "Setting up your preset spaces…"
+
   build_workspace "$ws" "$tree"
+  built+=("$ws")
 done
 
-# You end up on the first workspace in the sequence: it is built first because
-# it is the one that matters most, so it is the one to be looking at.
-focus_ws="$(head -1 <<<"$workspaces")"
-[[ -z $focus_ws ]] && focus_ws="$original_ws"
-dispatch "hl.dsp.focus({ workspace = \"$focus_ws\" })"
+# You end up on the first workspace that was built: it comes first in the
+# sequence because it is the one that matters most, so it is the one to be
+# looking at. If nothing was built — every workspace was already open — then
+# nothing was set up for you to look at, and being thrown across the desktop
+# would be the only thing that happened. You stay where you are.
+if ((${#built[@]})); then
+  dispatch "hl.dsp.focus({ workspace = \"${built[0]}\" })"
+fi
 
-if ((${#skipped[@]})); then
+if ((${#skipped[@]} && !${#built[@]})); then
+  if ((${#skipped[@]} == 1)); then
+    notify_send "$profile_name was already open" \
+      "Workspace ${skipped[0]} had windows, so nothing was opened."
+  else
+    notify_send "$profile_name was already open" \
+      "Workspaces ${skipped[*]} had windows, so nothing was opened."
+  fi
+elif ((${#skipped[@]})); then
   if ((${#skipped[@]} == 1)); then
     notify_send "$profile_name is ready" "Workspace ${skipped[0]} already had windows and was left alone."
   else

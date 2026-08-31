@@ -83,7 +83,9 @@ omarchy plugin remove io.github.imryiuk.workspace-profiles
   ordinary command-line arguments, so `-e btop` works on a terminal.
 - **Launch order** along the bottom is the order the workspaces get built in,
   and the first of them is where you are left once everything has opened. Drag a
-  workspace along the strip to reorder it.
+  workspace along the strip to reorder it. If a workspace was already open it is
+  left alone, and if that goes for all of them — nothing was opened — you are
+  not moved anywhere either.
 
 *Clicking* an app onto a pane that already has one **splits** it rather than
 replacing what was there — a pane you already filled is a decision you made, and
@@ -258,7 +260,7 @@ cd omarchy-workspace-profiles
 
 node tests/model.test.js     # tree operations and canvas geometry
 tests/plan.test.sh           # the launch plan, step by step
-tests/boot.test.sh           # when a login run goes ahead, and when it does not
+tests/apply.test.sh          # when a login run goes ahead, and where you land
 
 scripts/install              # copy into ~/.config/omarchy/plugins/ and rescan
 ```

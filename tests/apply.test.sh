@@ -1,12 +1,15 @@
 #!/bin/bash
 
-# Tests for the --boot guard in bin/workspace-profiles-apply.
+# Tests for the two decisions bin/workspace-profiles-apply makes around the
+# building itself: whether a --boot run happens at all, and where you are left
+# when it is over.
 #
-# A boot run opens a dozen windows. It is welcome the moment you log in and an
-# ambush at any other time, so the script asks how long the compositor has been
-# up before it does anything. These cases pin down when it goes ahead.
+# Both are about not moving the desktop under someone. A boot run opens a dozen
+# windows, which is welcome the moment you log in and an ambush at any other
+# time; and an apply that turned out to have nothing to open should not throw
+# you across the workspaces to show you it.
 #
-# Run with: tests/boot.test.sh
+# Run with: tests/apply.test.sh
 
 set -uo pipefail
 
@@ -30,11 +33,23 @@ cat >"$tmp/stub/ps" <<'EOF'
 #!/bin/bash
 echo "${FAKE_COMPOSITOR_AGE:-0}"
 EOF
+# Answers the two questions a run puts to Hyprland — which workspaces already
+# have windows, and where you are — and writes down every dispatch it is sent,
+# so a case can assert on where focus ended up.
 cat >"$tmp/stub/hyprctl" <<'EOF'
 #!/bin/bash
 case "${1:-}" in
-  activeworkspace) echo '{"id":1}' ;;
-  clients) echo '[]' ;;
+  activeworkspace) echo '{"id":9}' ;;
+  clients)
+    sep=""
+    printf '['
+    for ws in ${FAKE_OCCUPIED:-}; do
+      printf '%s{"address":"0x%s","workspace":{"id":%s}}' "$sep" "$ws" "$ws"
+      sep=","
+    done
+    printf ']'
+    ;;
+  dispatch) printf '%s\n' "${2:-}" >>"${FAKE_DISPATCH_LOG:-/dev/null}" ;;
 esac
 EOF
 chmod +x "$tmp/stub"/*
@@ -62,6 +77,18 @@ run() {
   PATH="$tmp/stub:$PATH" FAKE_COMPOSITOR_AGE="$age" \
     XDG_RUNTIME_DIR="$tmp/run" WORKSPACE_PROFILES_STORE="$tmp/profiles.json" \
     "$APPLY" --dry-run --no-notify "$@" 2>&1
+}
+
+# The same, for real: --dry-run never asks who is on a workspace, and being
+# left alone is the case worth testing. Nothing escapes the stubs, and the
+# timeout is short because no window is ever going to map.
+run_live() {
+  local occupied="$1"; shift
+  : >"$tmp/dispatched"
+  PATH="$tmp/stub:$PATH" FAKE_COMPOSITOR_AGE=6 FAKE_OCCUPIED="$occupied" \
+    FAKE_DISPATCH_LOG="$tmp/dispatched" \
+    XDG_RUNTIME_DIR="$tmp/run" WORKSPACE_PROFILES_STORE="$tmp/profiles.json" \
+    "$APPLY" --no-notify --timeout 1 "$@" 2>&1
 }
 
 check() {
@@ -101,6 +128,18 @@ check "a widened window lets the boot run through" "$out" "workspace 1"
 out="$(run 10776 --profile morning)"
 check "an explicit apply is never refused" "$out" "workspace 1"
 check "an explicit apply says nothing about logins" "$out" "this is not a login" lacks
+
+# The complaint this half exists for: every workspace was already open, the
+# profile opened nothing, and you were still dragged to workspace 1 to look at
+# the nothing that had happened.
+out="$(run_live "1 2 3" --profile morning)"
+check "an all-skipped apply says so" "$out" "already has windows"
+check "an all-skipped apply moves nobody" "$(cat "$tmp/dispatched")" "focus" lacks
+
+# When there is something to build, its workspace is where you want to be.
+out="$(run_live "" --profile morning)"
+check "a built workspace is where you land" "$(cat "$tmp/dispatched")" \
+  'hl.dsp.focus({ workspace = "1" })'
 
 printf '%d passed, %d failed\n' "$passed" "$failed"
 ((failed == 0))
