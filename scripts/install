@@ -10,10 +10,11 @@ readonly ID="io.github.imryiuk.workspace-profiles"
 readonly SRC="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly DEST="$HOME/.config/omarchy/plugins/$ID"
 
+# The whole checkout goes over, tests and all: keeping the two identical means
+# the installed copy can also be a git checkout of the same commit, so
+# `omarchy plugin update` sees a clean tree and can fast-forward it.
 mkdir -p "$DEST"
-rsync -a --delete \
-  --exclude '.git' --exclude '.claude' --exclude 'tests' --exclude 'scripts' \
-  "$SRC/" "$DEST/"
+rsync -a --delete --exclude '.git' --exclude '.claude' "$SRC/" "$DEST/"
 
 echo "installed to $DEST"
 command -v omarchy-shell >/dev/null 2>&1 && omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
