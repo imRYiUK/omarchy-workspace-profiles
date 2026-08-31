@@ -1,0 +1,19 @@
+#!/bin/bash
+# Copy this checkout into the directory Omarchy loads plugins from. Saving a
+# file under ~/.config/omarchy/plugins/ hot-reloads the shell, so this is the
+# whole edit-and-see-it loop. A copy rather than a symlink: plugin validation
+# rejects symlinks inside a plugin folder.
+
+set -euo pipefail
+
+readonly ID="io.github.imryiuk.workspace-profiles"
+readonly SRC="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly DEST="$HOME/.config/omarchy/plugins/$ID"
+
+mkdir -p "$DEST"
+rsync -a --delete \
+  --exclude '.git' --exclude '.claude' --exclude 'tests' --exclude 'scripts' \
+  "$SRC/" "$DEST/"
+
+echo "installed to $DEST"
+command -v omarchy-shell >/dev/null 2>&1 && omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true

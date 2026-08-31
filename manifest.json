@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.imryiuk.workspace-profiles",
+  "name": "Workspace Profiles",
+  "version": "0.1.0",
+  "author": "imRYiUK",
+  "license": "MIT",
+  "description": "Preset your session. Pick the apps for each workspace and drag out the tiling layout they should open into, then have the whole thing build itself when you log in.",
+  "kinds": ["service", "bar-widget"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Workspace Profiles",
+    "description": "Launch a preset set of apps and tiling layouts across your workspaces",
+    "category": "Launcher",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": { "showProfileName": false, "notify": true },
+    "schema": [
+      { "key": "showProfileName", "type": "bool", "label": "Show the active profile name in the bar" },
+      { "key": "notify", "type": "bool", "label": "Notify when a profile is applied" }
+    ]
+  }
+}

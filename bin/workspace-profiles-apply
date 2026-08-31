@@ -1,0 +1,348 @@
+#!/bin/bash
+
+# Launches a Workspace Profiles profile: opens each workspace's preset apps and
+# rebuilds the tiling layout they were arranged into.
+#
+# The layout half is the interesting part. Hyprland's dwindle layout can only
+# ever split one existing window in two, so a saved tree is rebuilt top-down:
+# for each split, the window already filling that region is focused, a preselect
+# layout message aims the next window at the chosen side, and the app is
+# launched into it. lib/plan.jq turns a tree into that ordered step list.
+#
+# Split ratios are set immediately after each split rather than in a pass at the
+# end: at that moment each half is a single window, so a resize lands on exactly
+# that split. Later, once the halves have been subdivided, the same resize would
+# be absorbed by the innermost split instead.
+
+set -uo pipefail
+
+readonly SELF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly PLAN_JQ="$SELF_DIR/../lib/plan.jq"
+readonly GLYPH="󰙀"
+
+STORE="${WORKSPACE_PROFILES_STORE:-$HOME/.config/omarchy/workspace-profiles/profiles.json}"
+MARKER_DIR="${XDG_RUNTIME_DIR:-/tmp}/omarchy-workspace-profiles"
+MARKER="$MARKER_DIR/applied"
+
+profile_id=""
+boot_mode=0
+dry_run=0
+notify=1
+window_timeout=15
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: workspace-profiles-apply [options]
+
+  --profile <id>   profile to apply (default: the store's activeProfile)
+  --boot           login run: write the once-per-boot marker first, and only
+                   touch workspaces that are still empty
+  --dry-run        print what would happen, touch nothing
+  --no-notify      no desktop notifications
+  --store <path>   profiles.json to read (default: the plugin's store)
+  --timeout <sec>  how long to wait for a launched window (default: 15)
+EOF
+  exit 2
+}
+
+while (($#)); do
+  case "$1" in
+    --profile) profile_id="${2:-}"; shift 2 || usage ;;
+    --store) STORE="${2:-}"; shift 2 || usage ;;
+    --timeout) window_timeout="${2:-}"; shift 2 || usage ;;
+    --boot) boot_mode=1; shift ;;
+    --dry-run) dry_run=1; shift ;;
+    --no-notify) notify=0; shift ;;
+    -h | --help) usage ;;
+    *) echo "workspace-profiles-apply: unknown argument '$1'" >&2; usage ;;
+  esac
+done
+
+# ---------------------------------------------------------------- plumbing
+
+log() { printf '%s\n' "$*" >&2; }
+
+notify_send() {
+  ((notify)) || return 0
+  ((dry_run)) && { log "notify: $1 — ${2:-}"; return 0; }
+  command -v omarchy-notification-send >/dev/null 2>&1 || return 0
+  omarchy-notification-send -g "$GLYPH" "$1" "${2:-}" >/dev/null 2>&1 || true
+}
+
+die() {
+  log "workspace-profiles: $1"
+  notify_send "Workspace Profiles" "$1"
+  exit 1
+}
+
+dispatch() {
+  if ((dry_run)); then
+    log "  dispatch  $1"
+    return 0
+  fi
+  hyprctl dispatch "$1" >/dev/null 2>&1
+}
+
+# Addresses of the windows currently on a workspace, one per line.
+clients_on() {
+  hyprctl clients -j 2>/dev/null | jq -r --argjson ws "$1" \
+    '.[] | select(.workspace.id == $ws) | .address'
+}
+
+# "<width> <height>" for one window, empty if it is gone.
+geometry_of() {
+  hyprctl clients -j 2>/dev/null | jq -r --arg a "$1" \
+    '.[] | select(.address == $a) | "\(.size[0]) \(.size[1])"'
+}
+
+# ------------------------------------------------------------------ launch
+
+# Absolute path of a desktop entry, searched the way the XDG spec orders them.
+desktop_file_for() {
+  local id="$1" dir
+  local -a dirs=("$HOME/.local/share/applications") xdg=()
+  IFS=: read -ra xdg <<<"${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+  for dir in "${xdg[@]}"; do dirs+=("$dir/applications"); done
+  for dir in "${dirs[@]}"; do
+    [[ -f "$dir/$id.desktop" ]] && { printf '%s' "$dir/$id.desktop"; return 0; }
+  done
+  return 1
+}
+
+# The Exec line of a desktop entry, with the field codes stripped. Only the
+# [Desktop Entry] group counts — an action group further down has its own Exec.
+desktop_exec() {
+  local file
+  file="$(desktop_file_for "$1")" || return 1
+  awk '
+    /^\[Desktop Entry\]/ { in_entry = 1; next }
+    /^\[/                { in_entry = 0 }
+    in_entry && /^Exec=/ { sub(/^Exec=/, ""); print; exit }
+  ' "$file" | sed -E 's/%[fFuUickdDnNvm]//g; s/[[:space:]]+$//'
+}
+
+# Launch an app detached from this script.
+#
+# With no arguments this is the same gtk-launch call Omarchy's own launcher
+# makes, which handles entries whose Exec is awkward to reconstruct. With
+# arguments we go through the Exec line instead: gtk-launch treats what follows
+# the desktop id as files to open, so `alacritty -e btop` would arrive as two
+# filenames rather than a flag and its value.
+launch_app() {
+  local id="$1" args="${2:-}"
+  local -a argv
+
+  if [[ -z $args ]]; then
+    argv=(gtk-launch "$id.desktop")
+  else
+    local exec_line
+    if exec_line="$(desktop_exec "$id")" && [[ -n $exec_line ]]; then
+      # The Exec line is shell-quoted by the spec and the arguments are the
+      # user's own, so let the shell split both the way a terminal would.
+      if ! eval "argv=($exec_line $args)" 2>/dev/null; then
+        log "  ! could not parse Exec for $id, falling back to gtk-launch"
+        argv=(gtk-launch "$id.desktop")
+      fi
+    else
+      log "  ! no desktop entry for $id, falling back to gtk-launch"
+      argv=(gtk-launch "$id.desktop")
+    fi
+  fi
+
+  if ((dry_run)); then
+    log "  launch    uwsm-app -- ${argv[*]}"
+    return 0
+  fi
+
+  # Under uwsm-app so the app lands in app-graphical.slice instead of
+  # inheriting this script's unit, matching how Omarchy launches everything else.
+  setsid -f uwsm-app -- "${argv[@]}" >/dev/null 2>&1
+}
+
+# Wait for a window to show up on a workspace that was not there before.
+# Prints its address. Polling rather than following socket2 keeps this to jq
+# and hyprctl, and 80ms is well inside the time any app takes to map.
+wait_for_window() {
+  local ws="$1" before="$2"
+  local deadline=$((SECONDS + window_timeout)) now new
+
+  while ((SECONDS < deadline)); do
+    now="$(clients_on "$ws")"
+    new="$(comm -13 <(sort <<<"$before") <(sort <<<"$now") 2>/dev/null | head -1)"
+    [[ -n $new ]] && { printf '%s' "$new"; return 0; }
+    sleep 0.08
+  done
+  return 1
+}
+
+# ------------------------------------------------------------------ ratios
+#
+# Nudge a fresh split until the first half takes `ratio` of it. Two passes:
+# Hyprland clamps a resize against the window's own minimum size and against
+# gaps, so the first delta can land short, and measuring again is cheaper than
+# modelling those rules.
+apply_ratio() {
+  local first="$1" second="$2" dir="$3" ratio="$4" pass
+  local fw fh sw sh total target delta
+
+  ((dry_run)) && { log "  ratio     $ratio on $dir split"; return 0; }
+
+  for pass in 1 2; do
+    read -r fw fh <<<"$(geometry_of "$first")"
+    read -r sw sh <<<"$(geometry_of "$second")"
+    [[ -z $fw || -z $sw ]] && return 0
+
+    if [[ $dir == r ]]; then
+      total=$((fw + sw))
+      target="$(awk -v r="$ratio" -v t="$total" 'BEGIN { printf "%d", r * t + 0.5 }')"
+      delta=$((target - fw))
+      ((delta > -2 && delta < 2)) && return 0
+      dispatch "hl.dsp.window.resize({ window = \"address:$first\", x = $delta, y = 0, relative = true })"
+    else
+      total=$((fh + sh))
+      target="$(awk -v r="$ratio" -v t="$total" 'BEGIN { printf "%d", r * t + 0.5 }')"
+      delta=$((target - fh))
+      ((delta > -2 && delta < 2)) && return 0
+      dispatch "hl.dsp.window.resize({ window = \"address:$first\", x = 0, y = $delta, relative = true })"
+    fi
+  done
+}
+
+# -------------------------------------------------------------- one workspace
+
+# Walks the step list from plan.jq, keeping a pane path -> window address map so
+# each split can focus the window it is meant to divide.
+build_workspace() {
+  local ws="$1" tree="$2"
+  local -A window_of=()
+  local op from pane dir ratio app args before addr new_addr
+  local launched=0 failed=0
+
+  local plan
+  plan="$(jq -r -f "$PLAN_JQ" <<<"$tree" 2>/dev/null)" || {
+    log "  ! workspace $ws: could not read its layout"
+    return 1
+  }
+  [[ -z $plan ]] && return 0
+
+  log "workspace $ws"
+  dispatch "hl.dsp.focus({ workspace = \"$ws\" })"
+
+  while IFS=$'\t' read -r op from pane dir ratio app args; do
+    [[ -z ${op:-} ]] && continue
+
+    if [[ $op == split ]]; then
+      addr="${window_of[$from]:-}"
+      if [[ -z $addr ]]; then
+        log "  ! no window for pane '$from', skipping the pane it splits"
+        ((failed++))
+        continue
+      fi
+      dispatch "hl.dsp.focus({ window = \"address:$addr\" })"
+      dispatch "hl.dsp.layout(\"preselect $dir\")"
+    fi
+
+    before="$(clients_on "$ws")"
+    launch_app "$app" "$args"
+
+    if ((dry_run)); then
+      window_of[$pane]="dry:$pane"
+      ((launched++))
+      continue
+    fi
+
+    if ! new_addr="$(wait_for_window "$ws" "$before")"; then
+      log "  ! $app never opened a window, continuing without it"
+      ((failed++))
+      # A preselect armed for a window that never arrived stays armed, but every
+      # later split re-arms it before launching, and a seed lands on an empty
+      # workspace where there is nothing to split — so it cannot misplace anything.
+      continue
+    fi
+
+    window_of[$pane]="$new_addr"
+    ((launched++))
+    log "  + $app${args:+ $args}"
+
+    if [[ $op == split ]]; then
+      apply_ratio "${window_of[$from]}" "$new_addr" "$dir" "$ratio"
+    fi
+  done <<<"$plan"
+
+  ((failed)) && log "  workspace $ws: $launched opened, $failed failed"
+  return 0
+}
+
+# ------------------------------------------------------------------- main
+
+command -v hyprctl >/dev/null 2>&1 || die "Hyprland is not running"
+command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
+[[ -r $PLAN_JQ ]] || die "missing $PLAN_JQ"
+[[ -r $STORE ]] || { log "no profile store at $STORE"; exit 0; }
+
+store="$(cat "$STORE")"
+jq -e . >/dev/null 2>&1 <<<"$store" || die "profiles.json is not valid JSON"
+
+if [[ -z $profile_id ]]; then
+  if ((boot_mode)); then
+    profile_id="$(jq -r '.loginProfile // ""' <<<"$store")"
+    [[ -z $profile_id || $profile_id == null ]] && { log "no login profile set"; exit 0; }
+  else
+    profile_id="$(jq -r '.activeProfile // ""' <<<"$store")"
+    [[ -z $profile_id || $profile_id == null ]] && die "no profile selected"
+  fi
+fi
+
+profile="$(jq -c --arg id "$profile_id" '.profiles[]? | select(.id == $id)' <<<"$store")"
+[[ -z $profile ]] && die "no profile called '$profile_id'"
+
+profile_name="$(jq -r '.name // .id' <<<"$profile")"
+workspaces="$(jq -r '.workspaces | keys_unsorted[]' <<<"$profile" 2>/dev/null | sort -n)"
+[[ -z $workspaces ]] && { log "profile '$profile_name' has no workspaces"; exit 0; }
+
+# Claimed once there is real work to do, and before any of it happens: a second
+# shell start during the same login — an omarchy-restart-shell, a crash and a
+# respawn — must not open everything a second time. XDG_RUNTIME_DIR is wiped at
+# logout, so the next real login starts over with a clean slate.
+if ((boot_mode)) && ((!dry_run)); then
+  mkdir -p "$MARKER_DIR" 2>/dev/null
+  if ! (set -o noclobber; : >"$MARKER") 2>/dev/null; then
+    log "already applied this session, nothing to do"
+    exit 0
+  fi
+fi
+
+notify_send "Workspace Profiles" "Setting up your preset spaces…"
+
+original_ws="$(hyprctl activeworkspace -j 2>/dev/null | jq -r '.id // 1')"
+skipped=()
+
+for ws in $workspaces; do
+  tree="$(jq -c --arg w "$ws" '.workspaces[$w]' <<<"$profile")"
+  [[ -z $tree || $tree == null ]] && continue
+
+  # A workspace that already has windows can't be built into: the first app is
+  # meant to fill the whole workspace, and every split is measured from there.
+  # Rather than nest the layout inside whatever is already open, leave it alone.
+  if ((!dry_run)) && [[ -n "$(clients_on "$ws")" ]]; then
+    skipped+=("$ws")
+    log "workspace $ws already has windows, leaving it alone"
+    continue
+  fi
+
+  build_workspace "$ws" "$tree"
+done
+
+focus_ws="$(jq -r '.focusWorkspace // ""' <<<"$profile")"
+[[ -z $focus_ws || $focus_ws == null ]] && focus_ws="$original_ws"
+dispatch "hl.dsp.focus({ workspace = \"$focus_ws\" })"
+
+if ((${#skipped[@]})); then
+  if ((${#skipped[@]} == 1)); then
+    notify_send "$profile_name is ready" "Workspace ${skipped[0]} already had windows and was left alone."
+  else
+    notify_send "$profile_name is ready" "Workspaces ${skipped[*]} already had windows and were left alone."
+  fi
+else
+  notify_send "$profile_name is ready" ""
+fi
