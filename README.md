@@ -115,12 +115,18 @@ already open. You get a notification saying which workspaces were skipped.
 ### From a keybinding
 
 The plugin registers two IPC targets, so a profile can be launched without
-touching the bar. In `~/.config/hypr/bindings.lua`:
+touching the bar. It binds no keys of its own and never edits your config, so
+pick your own combos — the ones below are placeholders. In
+`~/.config/hypr/bindings.lua`:
 
 ```lua
-o.bind("SUPER + SHIFT + P", "Apply workspace profile", "omarchy-shell workspace-profiles apply morning")
-o.bind("SUPER + ALT + P", "Edit workspace profiles", "omarchy-shell io.github.imryiuk.workspace-profiles toggle")
+o.bind("<YOUR KEYBIND>", "Apply workspace profile", "omarchy-shell workspace-profiles apply morning")
+o.bind("<YOUR KEYBIND>", "Edit workspace profiles", "omarchy-shell io.github.imryiuk.workspace-profiles toggle")
 ```
+
+Replace `<YOUR KEYBIND>` with a combo of your own, written the way Omarchy
+writes them (`"SUPER + SHIFT + K"`), and check it against `omarchy-menu` →
+Keybindings first so it does not shadow one you already use.
 
 | Call | Effect |
 |---|---|
