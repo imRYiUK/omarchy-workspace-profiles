@@ -73,11 +73,37 @@ Item {
     treeEdited(Model.setRatioAt(tree, path, ratio))
   }
 
-  // An empty pane takes the app; a pane that already has one is split and the
-  // app lands on the right, so a click never costs you a pane you had set up.
-  // Selection follows the app to wherever it ended up.
-  function assign(path, appId) {
-    var result = Model.assignApp(tree, path, appId)
+  // The shape of the pane on screen decides which way it splits: a pane wider
+  // than it is tall becomes two columns, a taller one becomes two rows. Three
+  // apps in a row would otherwise end up as three thin columns, when what the
+  // third one wants is the bottom half of the second.
+  function splitDirectionFor(key) {
+    var leaves = rects.leaves
+    for (var i = 0; i < leaves.length; i++) {
+      if (leaves[i].key === key) return leaves[i].w >= leaves[i].h ? "v" : "h"
+    }
+    return "v"
+  }
+
+  // An empty pane takes the app; a pane that already has one is split, so a
+  // click never costs you a pane you had set up. Selection follows the app to
+  // wherever it ended up.
+  // `dir` and `before` come from the drop zone when there was one. A click from
+  // the app list has no zone, so the pane's own shape decides.
+  function assign(path, appId, dir, before) {
+    var direction = dir === undefined ? splitDirectionFor(path.join(".")) : dir
+    var result = Model.assignApp(tree, path, appId, direction, before === true)
+    treeEdited(result.tree)
+    selectionChanged(result.path)
+  }
+
+  function replaceApp(path, appId) {
+    treeEdited(Model.setAppAt(tree, path, appId))
+    selectionChanged(path.slice())
+  }
+
+  function movePane(from, to, dir, before) {
+    var result = Model.movePane(tree, from, to, dir, before === true)
     treeEdited(result.tree)
     selectionChanged(result.path)
   }

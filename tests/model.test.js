@@ -52,12 +52,62 @@ test("clicking an app onto an empty pane fills it", () => {
 })
 
 test("clicking an app onto a filled pane splits it instead of replacing it", () => {
-  const r = M.assignApp(leaf("chromium"), [], "foot")
+  const r = M.assignApp(leaf("chromium"), [], "foot", "v")
   assert.strictEqual(r.tree.type, "split")
   assert.strictEqual(r.tree.dir, "v", "side by side")
   assert.strictEqual(r.tree.a.app, "chromium", "what was there stays on the left")
   assert.strictEqual(r.tree.b.app, "foot", "the new app goes on the right")
   assert.deepStrictEqual(r.path, ["b"], "selection follows the app that was just placed")
+})
+
+test("a tall pane splits into rows rather than columns", () => {
+  // Which way a pane splits is the caller's call, because it depends on the
+  // shape on screen: three apps in a row would otherwise be three thin columns.
+  const r = M.assignApp(leaf("chromium"), [], "foot", "h")
+  assert.strictEqual(r.tree.dir, "h")
+  assert.strictEqual(r.tree.b.app, "foot", "the new app goes underneath")
+})
+
+test("an app dropped on the top of a pane goes above it", () => {
+  const r = M.assignApp(leaf("chromium"), [], "foot", "h", true)
+  assert.strictEqual(r.tree.dir, "h")
+  assert.strictEqual(r.tree.a.app, "foot", "the incoming app takes the top half")
+  assert.strictEqual(r.tree.b.app, "chromium")
+  assert.deepStrictEqual(r.path, ["a"])
+})
+
+// ---- moving a pane onto the side of another
+
+test("a pane dropped on the bottom of another lands under it", () => {
+  const tree = {
+    type: "split", dir: "v", ratio: 0.5,
+    a: leaf("A"),
+    b: { type: "split", dir: "h", ratio: 0.5, a: leaf("B"), b: leaf("C") }
+  }
+  const r = M.movePane(tree, ["b", "b"], ["a"], "h", false)
+  assert.strictEqual(apps(r.tree), "A,C,B", "C moved under A; B took over the space C left")
+  assert.strictEqual(M.nodeAt(r.tree, ["a"]).dir, "h")
+  assert.deepStrictEqual(r.path, ["a", "b"], "selection follows the pane that moved")
+})
+
+test("moving a pane re-derives the target path around the hole it leaves", () => {
+  // Removing b.b collapses the b split, so the pane that was at b.a is now at
+  // b. Splitting the stale path would have hit the wrong pane.
+  const tree = {
+    type: "split", dir: "v", ratio: 0.5,
+    a: leaf("A"),
+    b: { type: "split", dir: "h", ratio: 0.5, a: leaf("B"), b: leaf("C") }
+  }
+  const r = M.movePane(tree, ["b", "b"], ["b", "a"], "v", false)
+  assert.strictEqual(apps(r.tree), "A,B,C")
+  assert.strictEqual(M.nodeAt(r.tree, ["b"]).dir, "v", "B and C are now side by side")
+})
+
+test("a pane cannot be moved inside itself", () => {
+  const tree = M.splitAt(leaf("a"), [], "v")
+  assert.strictEqual(M.movePane(tree, [], ["a"], "v", false).tree, tree, "the root has nowhere to go")
+  const nested = { type: "split", dir: "v", ratio: 0.5, a: { type: "split", dir: "v", ratio: 0.5, a: leaf("A"), b: leaf("B") }, b: leaf("C") }
+  assert.strictEqual(M.movePane(nested, ["a"], ["a", "b"], "v", false).tree, nested, "would drop the subtree")
 })
 
 // ---- removing
@@ -148,11 +198,11 @@ test("a workspace that has been emptied drops out of the sequence", () => {
   assert.deepStrictEqual(M.syncSequence(profile).sequence, [1])
 })
 
-test("a workspace can be moved along the sequence", () => {
-  const profile = { sequence: [1, 3, 5], workspaces: {} }
-  assert.deepStrictEqual(M.moveInSequence({ sequence: [1, 3, 5] }, 5, -1).sequence, [1, 5, 3])
-  assert.deepStrictEqual(M.moveInSequence({ sequence: [1, 3, 5] }, 1, -1).sequence, [1, 3, 5], "already first")
-  assert.deepStrictEqual(M.moveInSequence({ sequence: [1, 3, 5] }, 5, 1).sequence, [1, 3, 5], "already last")
+test("a workspace can be dragged to any slot in the sequence", () => {
+  assert.deepStrictEqual(M.moveInSequenceTo({ sequence: [1, 3, 5] }, 5, 0).sequence, [5, 1, 3])
+  assert.deepStrictEqual(M.moveInSequenceTo({ sequence: [1, 3, 5] }, 1, 2).sequence, [3, 5, 1])
+  assert.deepStrictEqual(M.moveInSequenceTo({ sequence: [1, 3, 5] }, 3, 1).sequence, [1, 3, 5], "dropped where it was")
+  assert.deepStrictEqual(M.moveInSequenceTo({ sequence: [1, 3, 5] }, 3, 9).sequence, [1, 3, 5], "out of range")
 })
 
 // ---- the store

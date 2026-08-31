@@ -148,8 +148,8 @@ Panel {
     commit(next)
   }
 
-  function moveWorkspace(workspaceId, delta) {
-    withProfile(function(profile) { Model.moveInSequence(profile, workspaceId, delta) })
+  function moveWorkspaceTo(workspaceId, index) {
+    withProfile(function(profile) { Model.moveInSequenceTo(profile, workspaceId, index) })
   }
 
   function setTree(tree) {
@@ -769,7 +769,9 @@ Panel {
 
             Text {
               anchors.verticalCenter: parent.verticalCenter
-              text: root.launchOrder.length > 1 ? "Launch order — you end up on the first" : "Launch order"
+              text: root.launchOrder.length > 1
+                ? "Launch order — drag to reorder, you end up on the first"
+                : "Launch order"
               color: Util.alpha(Color.foreground, 0.7)
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
@@ -784,79 +786,103 @@ Panel {
               font.pixelSize: Style.font.caption
             }
 
-            // The workspaces this profile builds, in the order it builds them.
-            // The arrows only appear under the pointer, so at rest the row
-            // reads as a plain sequence rather than a control panel.
-            Repeater {
-              model: root.launchOrder
+            // The workspaces this profile builds, in the order it builds them,
+            // dragged into the order you want.
+            //
+            // One MouseArea over the whole strip rather than one per chip, and
+            // the move is only committed on release. Reordering while the
+            // pointer is still down would rebuild the chips underneath it and
+            // destroy the very item holding the mouse grab.
+            Item {
+              id: orderStrip
+              anchors.verticalCenter: parent.verticalCenter
+              width: orderRow.width
+              height: Style.space(20)
 
-              Rectangle {
-                id: orderChip
-                required property int index
-                required property var modelData
+              readonly property real step: Style.space(40) + orderRow.spacing
 
-                readonly property bool current: modelData === root.currentWorkspace
-                readonly property bool first: orderChip.index === 0
-                readonly property bool last: orderChip.index === root.launchOrder.length - 1
+              function slotAt(x) {
+                var slot = Math.floor(x / step)
+                return Math.max(0, Math.min(root.launchOrder.length - 1, slot))
+              }
 
-                anchors.verticalCenter: parent.verticalCenter
-                width: Style.space(40)
-                height: Style.space(20)
-                radius: Style.cornerRadius > 0 ? Style.space(4) : 0
-                color: Util.alpha(Color.foreground, orderChip.current ? 0.16 : (chipHover.containsMouse ? 0.08 : 0.02))
-                border.width: 1
-                border.color: orderChip.current ? Util.alpha(Color.accent, 0.8) : Util.alpha(Color.foreground, 0.1)
-
-                Text {
-                  anchors.centerIn: parent
-                  text: String(orderChip.modelData)
-                  color: Color.foreground
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
-                }
-
-                MouseArea {
-                  id: chipHover
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: {
-                    root.currentWorkspace = orderChip.modelData
-                    root.selectedPath = []
-                  }
-                }
+              Row {
+                id: orderRow
+                spacing: Style.space(4)
 
                 Repeater {
-                  model: [
-                    { glyph: "‹", delta: -1, atEdge: orderChip.first },
-                    { glyph: "›", delta: 1,  atEdge: orderChip.last }
-                  ]
+                  model: root.launchOrder
 
-                  Text {
-                    id: arrow
+                  Rectangle {
+                    id: orderChip
+                    required property int index
                     required property var modelData
 
-                    anchors.verticalCenter: parent.verticalCenter
-                    anchors.left: arrow.modelData.delta < 0 ? parent.left : undefined
-                    anchors.right: arrow.modelData.delta < 0 ? undefined : parent.right
-                    anchors.margins: Style.space(3)
-                    visible: chipHover.containsMouse && !arrow.modelData.atEdge
-                    text: arrow.modelData.glyph
-                    color: arrowMouse.containsMouse ? Color.accent : Util.alpha(Color.foreground, 0.7)
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.bodySmall
+                    readonly property bool current: orderChip.modelData === root.currentWorkspace
+                    readonly property bool lifted: orderMouse.grabbed === orderChip.index
 
-                    MouseArea {
-                      id: arrowMouse
+                    width: Style.space(40)
+                    height: Style.space(20)
+                    radius: Style.cornerRadius > 0 ? Style.space(4) : 0
+                    opacity: orderChip.lifted ? 0.45 : 1
+                    color: Util.alpha(Color.foreground, orderChip.current ? 0.16 : 0.02)
+                    border.width: 1
+                    border.color: orderChip.current
+                      ? Util.alpha(Color.accent, 0.8) : Util.alpha(Color.foreground, 0.1)
+
+                    Text {
                       anchors.centerIn: parent
-                      width: Style.space(13)
-                      height: parent.height
-                      hoverEnabled: true
-                      cursorShape: Qt.PointingHandCursor
-                      onClicked: root.moveWorkspace(orderChip.modelData, arrow.modelData.delta)
+                      text: String(orderChip.modelData)
+                      color: Color.foreground
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.caption
                     }
                   }
                 }
+              }
+
+              // Where the chip being dragged would land.
+              Rectangle {
+                visible: orderMouse.grabbed >= 0 && orderMouse.target !== orderMouse.grabbed
+                x: orderMouse.target * orderStrip.step - Style.space(3)
+                y: 0
+                width: Style.space(2)
+                height: parent.height
+                color: Color.accent
+              }
+
+              MouseArea {
+                id: orderMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                preventStealing: true
+                cursorShape: grabbed >= 0 ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+
+                property int grabbed: -1
+                property int target: -1
+
+                onPressed: function(mouse) {
+                  grabbed = orderStrip.slotAt(mouse.x)
+                  target = grabbed
+                }
+                onPositionChanged: function(mouse) {
+                  if (grabbed >= 0) target = orderStrip.slotAt(mouse.x)
+                }
+                onReleased: {
+                  if (grabbed >= 0 && target >= 0) {
+                    var workspace = root.launchOrder[grabbed]
+                    // A press that never moved is a click: show that workspace.
+                    if (target === grabbed) {
+                      root.currentWorkspace = workspace
+                      root.selectedPath = []
+                    } else {
+                      root.moveWorkspaceTo(workspace, target)
+                    }
+                  }
+                  grabbed = -1
+                  target = -1
+                }
+                onCanceled: { grabbed = -1; target = -1 }
               }
             }
           }

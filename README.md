@@ -35,25 +35,44 @@ omarchy plugin remove io.github.imryiuk.workspace-profiles
   you are on, and a dot on a chip marks the profile that runs at login.
 - **Workspaces 1–5** are the row below. A dot means something is set up there.
 - **Search for an app** on the left, then either click it onto the selected pane
-  or drag it onto any pane.
+  or drag it onto any pane. Where you let go on the pane decides the split:
 - **Split a pane** with the `◫` buttons that appear when you hover it — the
   first splits side by side, the second top and bottom. `✕` removes a pane and
   gives its space back to its neighbour.
 - **Drag a divider** to set how the space is shared. Double-click one to even it
   up again.
-- **Drag one pane onto another** to swap them.
+```
+            ┌───────────────────┐
+            │ ╲   above (rows) ╱│   drop near an edge and the incoming app
+            │  ╲             ╱  │   takes that half: top and bottom split
+            │   ╲___________╱   │   into rows, left and right into columns
+            │ l │  replace  │ r │
+            │ e │           │ i │   the middle replaces what is there
+            │ f │___________│ g │   instead of splitting
+            │ t ╱           ╲ h │
+            │  ╱             ╲ t │
+            │ ╱  below (rows) ╲ │
+            └───────────────────┘
+```
+
+  A highlight shows the half you are about to take before you let go.
+
+- **Drag one pane onto another** the same way to move it there; drop it in the
+  middle to swap the two.
 - **Arguments** for the selected pane go in the field under the canvas. This is
   what turns "open Chromium" into "open Chromium on google.com", and it takes
   ordinary command-line arguments, so `-e btop` works on a terminal.
 - **Launch order** along the bottom is the order the workspaces get built in,
-  and the first of them is where you are left once everything has opened. Hover
-  a workspace to move it with `‹` and `›`.
+  and the first of them is where you are left once everything has opened. Drag a
+  workspace along the strip to reorder it.
 
-Clicking an app onto a pane that already has one **splits** the pane and puts
-the new app on the right, rather than replacing what was there. A pane you
-already filled is a decision you made; losing it to a mis-click would be worse
-than an extra divider. To actually replace an app, remove the pane with `✕` and
-place the new one.
+*Clicking* an app onto a pane that already has one **splits** it rather than
+replacing what was there — a pane you already filled is a decision you made, and
+losing it to a mis-click would be worse than an extra divider. Which way it
+splits follows the shape of the pane, the same rule dwindle uses: a pane wider
+than it is tall becomes two columns, a taller one becomes two rows. So a third
+app dropped beside two columns lands under one of them rather than making a
+third thin column.
 
 **Apply now** builds the profile immediately. So does a right click on the bar
 icon, which is the quicker way once a profile is set up.

@@ -23,6 +23,25 @@ Item {
   readonly property bool filled: appId !== ""
   readonly property bool selected: !!host && !!pane && host.selectedKey === pane.key
   readonly property bool roomy: width > Style.space(70) && height > Style.space(40)
+  // Which side of this pane an incoming drag would take, from where the pointer
+  // is over it. The four edges are the four triangles the diagonals cut the pane
+  // into, so aiming at a side is aiming at the half that side will become; the
+  // middle is the one gesture that does not split, replacing what is here.
+  function zoneAt(px, py) {
+    if (!filled || width <= 0 || height <= 0) return "centre"
+
+    var nx = px / width
+    var ny = py / height
+    if (Math.abs(nx - 0.5) < 0.18 && Math.abs(ny - 0.5) < 0.18) return "centre"
+
+    var zone = "top"
+    var nearest = ny
+    if (1 - ny < nearest) { zone = "bottom"; nearest = 1 - ny }
+    if (nx < nearest) { zone = "left"; nearest = nx }
+    if (1 - nx < nearest) { zone = "right"; nearest = 1 - nx }
+    return zone
+  }
+
   // "", "ok", or "failed" — the result for this pane from the last test run.
   readonly property string testState: host && pane ? host.testState(pane.key) : ""
 
@@ -41,21 +60,65 @@ Item {
     Behavior on border.color { ColorAnimation { duration: 110 } }
   }
 
-  // Selecting a pane, and dragging a filled one onto another to swap them.
+  // One MouseArea for the whole card — selection, dragging, and the hover
+  // controls all come through here.
+  //
+  // The buttons deliberately have no MouseArea of their own. When they did, each
+  // one consumed hover on the way past, so the card stopped counting as hovered,
+  // so the row hid itself, so the card counted as hovered again: the pointer
+  // sat there flickering between two cursors several times a second. With a
+  // single area and a hit test there is nothing to compete with.
   MouseArea {
     id: cardMouse
     anchors.fill: parent
     hoverEnabled: true
-    cursorShape: root.filled ? Qt.OpenHandCursor : Qt.PointingHandCursor
-    drag.target: root.filled ? paneProxy : null
+    cursorShape: hoveredAction !== ""
+      ? Qt.PointingHandCursor
+      : (root.filled ? Qt.OpenHandCursor : Qt.PointingHandCursor)
+
+    // Which control the pointer is over, "" for none. Recomputed on movement
+    // rather than bound, because a MouseArea only reports a position while the
+    // pointer is inside it.
+    property string hoveredAction: ""
+
+    function actionAt(mx, my) {
+      if (!controls.visible) return ""
+      var local = mapToItem(controls, mx, my)
+      for (var i = 0; i < controls.children.length; i++) {
+        var button = controls.children[i]
+        if (button.action === undefined) continue
+        if (local.x >= button.x && local.x <= button.x + button.width
+          && local.y >= button.y && local.y <= button.y + button.height) return button.action
+      }
+      return ""
+    }
+
+    // A press on a control must not also start dragging the pane away.
+    drag.target: root.filled && hoveredAction === "" ? paneProxy : null
+
+    onPositionChanged: function(mouse) { hoveredAction = actionAt(mouse.x, mouse.y) }
+    onExited: hoveredAction = ""
+
     onPressed: function(mouse) {
+      hoveredAction = actionAt(mouse.x, mouse.y)
+      if (hoveredAction !== "") return
+
       if (root.host) root.host.select(root.path)
       if (!root.filled || !root.host || !root.host.dragLayer) return
       var point = mapToItem(root.host.dragLayer, mouse.x, mouse.y)
       paneProxy.x = point.x - paneProxy.width / 2
       paneProxy.y = point.y - paneProxy.height / 2
     }
+
     onReleased: if (paneProxy.Drag.active) paneProxy.Drag.drop()
+
+    onClicked: function(mouse) {
+      var action = actionAt(mouse.x, mouse.y)
+      if (action === "" || !root.host) return
+      if (action === "split-v") root.host.split(root.path, "v")
+      else if (action === "split-h") root.host.split(root.path, "h")
+      else root.host.remove(root.path)
+    }
   }
 
   // Empty pane: says what to do with it rather than sitting there blank.
@@ -149,38 +212,41 @@ Item {
   }
 
   // Hover controls, top-right. Hidden until the pointer is on the pane so the
-  // resting canvas stays a clean picture of the layout.
-  //
-  // Explicitly above the whole-card MouseArea. Among siblings the last one
-  // declared takes input first, so without this the card would swallow every
-  // click meant for these buttons — which is what it did before the MouseArea
-  // was moved above them.
+  // resting canvas stays a clean picture of the layout. Purely visual — the
+  // card's MouseArea does the hit testing, see the note there.
   Row {
+    id: controls
     z: 1
     anchors.top: parent.top
     anchors.right: parent.right
     anchors.margins: Style.space(4)
     spacing: Style.space(2)
-    opacity: cardMouse.containsMouse || root.selected ? 1 : 0
-    visible: opacity > 0 && root.roomy
+    visible: root.roomy && (cardMouse.containsMouse || root.selected)
+    opacity: visible ? 1 : 0
 
     Behavior on opacity { NumberAnimation { duration: 110 } }
 
     Repeater {
       model: [
-        { glyph: "◫", rotate: 0,  action: "split-v" },
-        { glyph: "◫", rotate: 90, action: "split-h" },
-        { glyph: "✕", rotate: 0,  action: "remove" }
+        { glyph: "◫", rotate: 0,  name: "split-v" },
+        { glyph: "◫", rotate: 90, name: "split-h" },
+        { glyph: "✕", rotate: 0,  name: "remove" }
       ]
 
       Rectangle {
         id: paneButton
         required property var modelData
 
+        // Read back by cardMouse.actionAt to work out what was clicked.
+        readonly property string action: paneButton.modelData.name
+
         width: Style.space(18)
         height: Style.space(18)
         radius: Style.cornerRadius > 0 ? Style.space(4) : 0
-        color: Util.alpha(Color.foreground, buttonMouse.containsMouse ? 0.18 : 0.08)
+        color: Util.alpha(Color.foreground,
+          cardMouse.hoveredAction === paneButton.action ? 0.22 : 0.08)
+
+        Behavior on color { ColorAnimation { duration: 90 } }
 
         Text {
           anchors.centerIn: parent
@@ -189,20 +255,6 @@ Item {
           color: Color.foreground
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
-        }
-
-        MouseArea {
-          id: buttonMouse
-          anchors.fill: parent
-          hoverEnabled: true
-          cursorShape: Qt.PointingHandCursor
-          onClicked: {
-            if (!root.host) return
-            var action = paneButton.modelData.action
-            if (action === "split-v") root.host.split(root.path, "v")
-            else if (action === "split-h") root.host.split(root.path, "h")
-            else root.host.remove(root.path)
-          }
         }
       }
     }
@@ -246,18 +298,53 @@ Item {
     }
   }
 
+  // Shows the space the incoming pane would take before it is dropped, so the
+  // split is chosen by aiming rather than by remembering the rule. A whole-pane
+  // highlight means the middle: replace, not split.
+  Rectangle {
+    z: 2
+    visible: dropTarget.containsDrag
+    radius: Style.cornerRadius
+    color: Util.alpha(Color.accent, 0.22)
+    border.width: 1
+    border.color: Color.accent
+
+    x: dropTarget.zone === "right" ? root.width / 2 : 0
+    y: dropTarget.zone === "bottom" ? root.height / 2 : 0
+    width: dropTarget.zone === "left" || dropTarget.zone === "right" ? root.width / 2 : root.width
+    height: dropTarget.zone === "top" || dropTarget.zone === "bottom" ? root.height / 2 : root.height
+
+    Behavior on x { NumberAnimation { duration: 90 } }
+    Behavior on y { NumberAnimation { duration: 90 } }
+    Behavior on width { NumberAnimation { duration: 90 } }
+    Behavior on height { NumberAnimation { duration: 90 } }
+  }
+
   DropArea {
     id: dropTarget
     anchors.fill: parent
     keys: ["wsp-app", "wsp-pane"]
+
+    property string zone: "centre"
+
+    onEntered: function(drag) { zone = root.zoneAt(drag.x, drag.y) }
+    onPositionChanged: function(drag) { zone = root.zoneAt(drag.x, drag.y) }
+
     onDropped: function(drop) {
       if (!root.host || !drop.source) return
 
+      var where = root.zoneAt(drop.x, drop.y)
+      var dir = where === "top" || where === "bottom" ? "h" : "v"
+      var before = where === "top" || where === "left"
+
       if (drop.source.appEntryId !== undefined && String(drop.source.appEntryId) !== "") {
-        root.host.assign(root.path, String(drop.source.appEntryId))
+        var appId = String(drop.source.appEntryId)
+        if (where === "centre") root.host.replaceApp(root.path, appId)
+        else root.host.assign(root.path, appId, dir, before)
         drop.accept()
       } else if (drop.source.panePath !== undefined) {
-        root.host.swap(drop.source.panePath, root.path)
+        if (where === "centre") root.host.swap(drop.source.panePath, root.path)
+        else root.host.movePane(drop.source.panePath, root.path, dir, before)
         drop.accept()
       }
     }

@@ -132,26 +132,83 @@ function removeAt(root, path) {
 }
 
 // Putting an app on a pane. An empty pane takes it; a pane that already has one
-// is split side by side and the new app goes on the right, because the pane you
-// clicked is a place you already decided something belongs — losing it to a
-// mis-click would be worse than the extra divider.
+// is split and the new app goes in the second half, because the pane you clicked
+// is a place you already decided something belongs — losing it to a mis-click
+// would be worse than the extra divider.
+//
+// `dir` is the caller's, because it depends on the shape of the pane on screen
+// rather than anything in the tree: a pane wider than it is tall splits into
+// columns, a tall one into rows. That is also what dwindle does when it splits a
+// window on its own, so the canvas keeps predicting the compositor.
 //
 // Returns both the new tree and where the app landed, so the caller can select
 // it: after a split that is a pane which did not exist a moment ago.
-function assignApp(root, path, appId) {
+function assignApp(root, path, appId, dir, before) {
   var target = nodeAt(root, path)
   if (!target || isSplit(target)) return { tree: root, path: path }
 
   if (String(target.app || "") === "")
     return { tree: setAppAt(root, path, appId), path: path }
 
+  var moving = leaf(appId)
+  var existing = clone(target)
+
   return {
     tree: replaceAt(root, path, {
-      type: "split", dir: "v", ratio: 0.5,
-      a: clone(target),
-      b: leaf(appId)
+      type: "split", dir: dir === "h" ? "h" : "v", ratio: 0.5,
+      a: before ? moving : existing,
+      b: before ? existing : moving
     }),
-    path: path.concat(["b"])
+    path: path.concat([before ? "a" : "b"])
+  }
+}
+
+// Where a path ends up once the pane at `removed` is taken out and its sibling
+// takes over their shared space. Returns null for a path that was inside the
+// removed pane and no longer exists.
+function pathAfterRemoval(path, removed) {
+  if (removed.length === 0) return null
+
+  var parent = removed.slice(0, -1)
+  var sibling = removed[removed.length - 1] === "a" ? "b" : "a"
+
+  if (!isAncestor(parent, path)) return path
+  return path[parent.length] === sibling
+    ? parent.concat(path.slice(parent.length + 1))
+    : null
+}
+
+// Drag a pane out of where it is and drop it against the side of another one.
+//
+// The removal has to happen first — the sibling of the pane being moved takes
+// over their shared space — and that can shift where the target sits in the
+// tree, so the target's path is re-derived before the split is made.
+function movePane(root, fromPath, toPath, dir, before) {
+  if (samePath(fromPath, toPath)) return { tree: root, path: toPath }
+  // Moving a pane inside itself has no meaning and would drop the subtree.
+  if (isAncestor(fromPath, toPath)) return { tree: root, path: toPath }
+  // The root is the whole workspace; there is nowhere to lift it out of.
+  if (fromPath.length === 0) return { tree: root, path: toPath }
+
+  var moving = nodeAt(root, fromPath)
+  if (!moving || !nodeAt(root, toPath)) return { tree: root, path: toPath }
+  moving = clone(moving)
+
+  var trimmed = removeAt(root, fromPath)
+  var landing = pathAfterRemoval(toPath, fromPath)
+  if (landing === null) return { tree: root, path: toPath }
+
+  var existing = nodeAt(trimmed, landing)
+  if (!existing) return { tree: root, path: toPath }
+  existing = clone(existing)
+
+  return {
+    tree: replaceAt(trimmed, landing, {
+      type: "split", dir: dir === "h" ? "h" : "v", ratio: 0.5,
+      a: before ? moving : existing,
+      b: before ? existing : moving
+    }),
+    path: landing.concat([before ? "a" : "b"])
   }
 }
 
@@ -301,13 +358,12 @@ function syncSequence(profile) {
   return profile
 }
 
-function moveInSequence(profile, workspaceId, delta) {
+function moveInSequenceTo(profile, workspaceId, index) {
   var sequence = Array.isArray(profile.sequence) ? profile.sequence.slice() : []
   var from = sequence.indexOf(workspaceId)
-  var to = from + delta
-  if (from < 0 || to < 0 || to >= sequence.length) return profile
+  if (from < 0 || index < 0 || index >= sequence.length || index === from) return profile
 
-  sequence.splice(to, 0, sequence.splice(from, 1)[0])
+  sequence.splice(index, 0, sequence.splice(from, 1)[0])
   profile.sequence = sequence
   return profile
 }
@@ -381,7 +437,8 @@ if (typeof module !== "undefined" && module.exports) {
     normalizeNode: normalizeNode, nodeAt: nodeAt, replaceAt: replaceAt, layoutRects: layoutRects,
     isAncestor: isAncestor, leafPaths: leafPaths, splitAt: splitAt, removeAt: removeAt,
     setAppAt: setAppAt, setArgsAt: setArgsAt, setRatioAt: setRatioAt, swap: swap,
-    assignApp: assignApp, syncSequence: syncSequence, moveInSequence: moveInSequence,
+    assignApp: assignApp, movePane: movePane, pathAfterRemoval: pathAfterRemoval,
+    syncSequence: syncSequence, moveInSequenceTo: moveInSequenceTo,
     filledLeaves: filledLeaves, isConfigured: isConfigured, workspaceSummary: workspaceSummary,
     emptyWorkspace: emptyWorkspace, newProfile: newProfile, normalizeProfile: normalizeProfile,
     normalizeStore: normalizeStore, profileById: profileById, profileIndex: profileIndex,
