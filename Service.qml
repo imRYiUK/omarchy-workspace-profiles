@@ -10,7 +10,8 @@ import qs.Commons
 // without going near the bar.
 //
 // Deliberately thin. All of the decision-making — is there a store, is a login
-// profile set, has this boot already been handled — lives in
+// profile set, is this start a login at all rather than a restarted shell, has
+// this boot already been handled — lives in
 // bin/workspace-profiles-apply, which exits in milliseconds when the answer is
 // no. Duplicating those checks here would mean two places to keep in agreement,
 // and the shell would carry a JSON parse and a file watch it has no other use

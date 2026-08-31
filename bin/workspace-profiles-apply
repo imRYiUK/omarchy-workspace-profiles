@@ -25,6 +25,15 @@ MARKER_DIR="${XDG_RUNTIME_DIR:-/tmp}/omarchy-workspace-profiles"
 MARKER="$MARKER_DIR/applied"
 RESULT="$MARKER_DIR/test-result.json"
 
+# How old the compositor may be for a --boot run to still count as a login, in
+# seconds. The marker below stops a second boot run inside one session, but it
+# cannot stop the first, and the service that fires it starts afresh every time
+# the shell does: enabling the plugin, or an omarchy-restart-shell, would build
+# the whole profile in the middle of whatever you were already doing. So a boot
+# run also has to be young — the Hyprland it is talking to must have started
+# moments ago, not this morning.
+BOOT_WINDOW="${WORKSPACE_PROFILES_BOOT_WINDOW:-120}"
+
 # A special workspace is only rendered while it is toggled open, so a window
 # that opens on one never reaches the screen. That is what makes a test run
 # invisible: the apps really start, really map a window, and are really closed,
@@ -43,8 +52,9 @@ usage() {
 Usage: workspace-profiles-apply [options]
 
   --profile <id>   profile to apply (default: the store's activeProfile)
-  --boot           login run: write the once-per-boot marker first, and only
-                   touch workspaces that are still empty
+  --boot           login run: only within the first $BOOT_WINDOW seconds of a
+                   Hyprland session, once per session, and only into workspaces
+                   that are still empty
   --dry-run        print what would happen, touch nothing
   --test           check every app starts, out of sight, then clean up
   --no-notify      no desktop notifications
@@ -77,6 +87,17 @@ notify_send() {
   ((dry_run)) && { log "notify: $1 — ${2:-}"; return 0; }
   command -v omarchy-notification-send >/dev/null 2>&1 || return 0
   omarchy-notification-send -g "$GLYPH" "$1" "${2:-}" >/dev/null 2>&1 || true
+}
+
+# Seconds since the compositor started, or nothing if that cannot be read — in
+# which case the caller carries on rather than refusing to open a login.
+compositor_age() {
+  local pid age
+  pid="$(pgrep -x Hyprland 2>/dev/null | head -n1)"
+  [[ -n $pid ]] || return 0
+  age="$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  [[ $age =~ ^[0-9]+$ ]] || return 0
+  printf '%s' "$age"
 }
 
 die() {
@@ -431,6 +452,19 @@ build_workspace() {
 # ------------------------------------------------------------------- main
 
 command -v hyprctl >/dev/null 2>&1 || die "Hyprland is not running"
+
+# Only a fresh session gets built for you. Every other --boot run — the shell
+# restarting, the plugin being enabled, applyLogin called out of curiosity — is
+# a request to open a dozen windows over the top of a desktop that is already
+# in use, which is not what ticking "open this profile when I log in" asked for.
+if ((boot_mode)); then
+  age="$(compositor_age)"
+  if [[ -n $age ]] && ((age > BOOT_WINDOW)); then
+    log "hyprland has been up ${age}s, this is not a login — nothing to do"
+    exit 0
+  fi
+fi
+
 command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
 [[ -r $PLAN_JQ ]] || die "missing $PLAN_JQ"
 [[ -r $STORE ]] || { log "no profile store at $STORE"; exit 0; }

@@ -121,10 +121,17 @@ window, and tells you it happened.
 
 ### At login
 
-Tick **Open this profile when I log in**. It applies once per login: restarting
-the shell (`omarchy-restart-shell`) or having it respawn after a crash will not
-open a second copy of everything, because the marker that records "already done"
-lives in `$XDG_RUNTIME_DIR`, which the system clears when you log out.
+Tick **Open this profile when I log in**. It applies once per login, and only
+at one — a login run has to reach a Hyprland that started in the last two
+minutes, so nothing opens by surprise. That is what makes enabling the plugin,
+or an `omarchy-restart-shell` at four in the afternoon, a no-op: the service
+starts again either way, sees a session hours old, and does nothing. A second
+run inside the same login is blocked as well, by a marker in `$XDG_RUNTIME_DIR`
+which the system clears when you log out.
+
+If your login is slow enough that the shell starts more than two minutes after
+the compositor, widen the window with `WORKSPACE_PROFILES_BOOT_WINDOW`, in
+seconds.
 
 A workspace that already has windows on it is left alone. The first app of a
 layout is meant to fill the workspace and every split is measured from there, so
@@ -151,7 +158,7 @@ Keybindings first so it does not shadow one you already use.
 |---|---|
 | `omarchy-shell workspace-profiles apply <id>` | apply a profile by id |
 | `omarchy-shell workspace-profiles applyActive` | apply the selected profile |
-| `omarchy-shell workspace-profiles applyLogin` | the login run, marker check included |
+| `omarchy-shell workspace-profiles applyLogin` | the login run — does nothing unless the session is new |
 | `bin/workspace-profiles-apply --profile <id> --test` | check every app starts, out of sight |
 | `omarchy-shell io.github.imryiuk.workspace-profiles toggle` | open or close the editor |
 
@@ -251,6 +258,7 @@ cd omarchy-workspace-profiles
 
 node tests/model.test.js     # tree operations and canvas geometry
 tests/plan.test.sh           # the launch plan, step by step
+tests/boot.test.sh           # when a login run goes ahead, and when it does not
 
 scripts/install              # copy into ~/.config/omarchy/plugins/ and rescan
 ```
