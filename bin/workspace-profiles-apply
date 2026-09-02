@@ -21,9 +21,30 @@ readonly PLAN_JQ="$SELF_DIR/../lib/plan.jq"
 readonly GLYPH="󰙀"
 
 STORE="${WORKSPACE_PROFILES_STORE:-$HOME/.config/omarchy/workspace-profiles/profiles.json}"
-MARKER_DIR="${XDG_RUNTIME_DIR:-/tmp}/omarchy-workspace-profiles"
+
+# Scratch space for one login. XDG_RUNTIME_DIR is the right home for it: it is
+# already private to this user and wiped at logout, which is exactly the
+# lifetime the once-per-login marker wants.
+#
+# The fallback is not a shared /tmp/omarchy-workspace-profiles. On a machine
+# with more than one account that is a name anybody can create first and point
+# wherever they like, and this script would then write its marker through their
+# symlink. It is a per-uid directory instead, and ensure_marker_dir below
+# refuses to use one that is a symlink or is not ours.
+if [[ -n ${XDG_RUNTIME_DIR:-} ]]; then
+  MARKER_DIR="$XDG_RUNTIME_DIR/omarchy-workspace-profiles"
+else
+  MARKER_DIR="${TMPDIR:-/tmp}/omarchy-workspace-profiles-$(id -u)"
+fi
 MARKER="$MARKER_DIR/applied"
 RESULT="$MARKER_DIR/test-result.json"
+
+# Ceilings on what this run will read or wait for. No real profile and no
+# healthy compositor comes near any of them; they are here so that a store or a
+# hyprctl that has gone wrong ends this run instead of hanging a login on it.
+readonly MAX_STORE_BYTES="${WORKSPACE_PROFILES_MAX_STORE_BYTES:-1048576}"
+readonly MAX_HYPRCTL_BYTES="${WORKSPACE_PROFILES_MAX_HYPRCTL_BYTES:-8388608}"
+readonly HYPRCTL_TIMEOUT="${WORKSPACE_PROFILES_HYPRCTL_TIMEOUT:-5}"
 
 # How old the compositor may be for a --boot run to still count as a login, in
 # seconds. The marker below stops a second boot run inside one session, but it
@@ -81,6 +102,51 @@ done
 # ---------------------------------------------------------------- plumbing
 
 log() { printf '%s\n' "$*" >&2; }
+
+# hyprctl, bounded. Every query below sits on the path a login takes, so a
+# compositor that has stopped answering its socket would leave the whole login
+# parked on one of them. The byte cap is for the JSON queries: jq reads them
+# from a pipe, and a reply that never ended would be read until memory ran out.
+if command -v timeout >/dev/null 2>&1; then
+  hypr() { timeout "$HYPRCTL_TIMEOUT" hyprctl "$@"; }
+else
+  hypr() { hyprctl "$@"; }
+fi
+
+hypr_json() { hypr "$@" 2>/dev/null | head -c "$MAX_HYPRCTL_BYTES"; }
+
+# Values spliced into a hyprctl dispatch or into a file path are checked against
+# the shape they are meant to have, rather than escaped into place. A workspace
+# key, a window address and a desktop entry id are all short, boring tokens in
+# every profile this plugin writes; one that is not is a store that has been
+# edited into something unexpected, and the honest answer is to skip it rather
+# than to guess what it meant.
+is_workspace_id() { [[ $1 =~ ^[0-9]+$ ]]; }
+is_address() { [[ $1 =~ ^0x[0-9a-fA-F]+$ ]]; }
+# The spec's own shape for a desktop file id, which also keeps a `/` out of the
+# path desktop_file_for builds from it.
+is_app_id() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; }
+
+# The runtime directory, made ours and confirmed to still be ours. `mkdir -m`
+# sets the mode only on a directory it creates, so one that already exists is
+# re-checked instead of trusted.
+ensure_marker_dir() {
+  if [[ -L $MARKER_DIR ]]; then
+    log "$MARKER_DIR is a symlink, refusing to use it"
+    return 1
+  fi
+  mkdir -p -m 700 "$MARKER_DIR" 2>/dev/null || return 1
+  if [[ ! -d $MARKER_DIR || -L $MARKER_DIR ]]; then
+    log "$MARKER_DIR is not a directory"
+    return 1
+  fi
+  if [[ ! -O $MARKER_DIR ]]; then
+    log "$MARKER_DIR is not owned by you, refusing to use it"
+    return 1
+  fi
+  chmod 700 "$MARKER_DIR" 2>/dev/null
+  return 0
+}
 
 notify_send() {
   ((notify)) || return 0
@@ -141,58 +207,71 @@ dispatch() {
     log "  dispatch  $1"
     return 0
   fi
-  hyprctl dispatch "$1" >/dev/null 2>&1
+  hypr dispatch "$1" >/dev/null 2>&1
 }
 
 # Addresses of the windows currently on a workspace, one per line.
 clients_on() {
-  hyprctl clients -j 2>/dev/null | jq -r --argjson ws "$1" \
+  is_workspace_id "$1" || return 0
+  hypr_json clients -j | jq -r --argjson ws "$1" \
     '.[] | select(.workspace.id == $ws) | .address'
 }
 
 # Addresses of the windows on a workspace named rather than numbered — special
 # workspaces have negative, assigned-on-demand ids.
 clients_on_named() {
-  hyprctl clients -j 2>/dev/null | jq -r --arg name "$1" \
+  hypr_json clients -j | jq -r --arg name "$1" \
     '.[] | select(.workspace.name == $name) | .address'
 }
 
 # Every window in the session, not just one workspace.
 all_addresses() {
-  hyprctl clients -j 2>/dev/null | jq -r '.[].address'
+  hypr_json clients -j | jq -r '.[].address'
 }
 
 workspace_name_of() {
-  hyprctl clients -j 2>/dev/null | jq -r --arg a "$1" \
+  is_address "$1" || return 0
+  hypr_json clients -j | jq -r --arg a "$1" \
     '.[] | select(.address == $a) | .workspace.name'
 }
 
 close_window() {
-  hyprctl dispatch "hl.dsp.window.close({ window = \"address:$1\" })" >/dev/null 2>&1
+  is_address "$1" || return 0
+  hypr dispatch "hl.dsp.window.close({ window = \"address:$1\" })" >/dev/null 2>&1
 }
 
 # "<width> <height>" for one window, empty if it is gone.
 geometry_of() {
-  hyprctl clients -j 2>/dev/null | jq -r --arg a "$1" \
+  is_address "$1" || return 0
+  hypr_json clients -j | jq -r --arg a "$1" \
     '.[] | select(.address == $a) | "\(.size[0]) \(.size[1])"'
 }
 
 # ------------------------------------------------------------------ launch
 
 # Absolute path of a desktop entry, searched the way the XDG spec orders them.
+#
+# A symlinked entry is followed on purpose: exported Flatpak and Snap
+# applications are symlinks into their own trees, and refusing those would hide
+# half of an ordinary desktop's apps. What is not followed is the id — it has to
+# look like a desktop file id before it is pasted into a path, so a stored `app`
+# cannot walk out of the applications directories with a `/`.
 desktop_file_for() {
   local id="$1" dir
+  is_app_id "$id" || return 1
   local -a dirs=("$HOME/.local/share/applications") xdg=()
   IFS=: read -ra xdg <<<"${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
-  for dir in "${xdg[@]}"; do dirs+=("$dir/applications"); done
+  for dir in "${xdg[@]}"; do
+    [[ -n $dir ]] && dirs+=("$dir/applications")
+  done
   for dir in "${dirs[@]}"; do
     [[ -f "$dir/$id.desktop" ]] && { printf '%s' "$dir/$id.desktop"; return 0; }
   done
   return 1
 }
 
-# The Exec line of a desktop entry, with the field codes stripped. Only the
-# [Desktop Entry] group counts — an action group further down has its own Exec.
+# The raw Exec value of a desktop entry. Only the [Desktop Entry] group counts —
+# an action group further down has its own Exec.
 desktop_exec() {
   local file
   file="$(desktop_file_for "$1")" || return 1
@@ -200,20 +279,169 @@ desktop_exec() {
     /^\[Desktop Entry\]/ { in_entry = 1; next }
     /^\[/                { in_entry = 0 }
     in_entry && /^Exec=/ { sub(/^Exec=/, ""); print; exit }
-  ' "$file" | sed -E 's/%[fFuUickdDnNvm]//g; s/[[:space:]]+$//'
+  ' "$file"
 }
 
-# Launch an app detached from this script.
+# Split an Exec value into argv, by the rules in the Desktop Entry
+# Specification.
+#
+# Those are not the shell's rules, and the difference is the whole reason this
+# is done by hand. The spec quotes with double quotes and gives meaning to
+# exactly four escapes inside them — \" \\ \` \$ — and to nothing else. A
+# `$(...)`, a backtick, a `;`, a `|`, a `>` or a `*` in an Exec value is an
+# ordinary character that the app is supposed to receive. Handing the line to
+# the shell instead runs them, which both mis-launches an app whose Exec
+# legitimately contains one and turns a desktop file into a script.
+#
+# Field codes expand to nothing here: this opens an app, it does not hand it a
+# file or a URL, so %f and friends have nothing to stand for. An argument that
+# was nothing but a field code disappears with it, so `foo %U` becomes `foo`.
+#
+# Appends to LAUNCH_ARGV. Returns 1 on an unterminated quote.
+parse_exec_into_argv() {
+  local line="$1"
+  local n=${#line} i=0 c nxt closed
+  local cur="" started=0 code=0
+
+  while ((i < n)); do
+    c="${line:i:1}"
+
+    if [[ $c == " " || $c == $'\t' ]]; then
+      if ((started)) && { [[ -n $cur ]] || ((code == 0)); }; then
+        LAUNCH_ARGV+=("$cur")
+      fi
+      cur=""; started=0; code=0
+      i=$((i + 1))
+      continue
+    fi
+
+    started=1
+    case "$c" in
+      '"')
+        i=$((i + 1)); closed=0
+        while ((i < n)); do
+          c="${line:i:1}"
+          if [[ $c == '\' ]]; then
+            nxt="${line:i+1:1}"
+            case "$nxt" in
+              '"' | '\' | '$' | '`') cur+="$nxt"; i=$((i + 2)); continue ;;
+            esac
+            cur+='\'; i=$((i + 1)); continue
+          fi
+          if [[ $c == '"' ]]; then closed=1; i=$((i + 1)); break; fi
+          cur+="$c"; i=$((i + 1))
+        done
+        ((closed)) || return 1
+        ;;
+      '%')
+        nxt="${line:i+1:1}"
+        if [[ $nxt == '%' ]]; then
+          cur+='%'; i=$((i + 2))
+        elif [[ $nxt == [fFuUdDnNickvm] ]]; then
+          code=1; i=$((i + 2))
+        else
+          cur+='%'; i=$((i + 1))
+        fi
+        ;;
+      *)
+        cur+="$c"; i=$((i + 1))
+        ;;
+    esac
+  done
+
+  if ((started)) && { [[ -n $cur ]] || ((code == 0)); }; then
+    LAUNCH_ARGV+=("$cur")
+  fi
+  return 0
+}
+
+# Split the arguments typed into a pane's argument box.
+#
+# This is a person writing a command line, so quotes and backslashes mean what
+# they mean in a terminal: `--title "two words"` is one argument. Nothing else
+# does. There is no expansion, no substitution, no globbing and no redirection,
+# because the box holds arguments for one app and was never a place to put a
+# second command.
+#
+# Appends to LAUNCH_ARGV. Returns 1 on an unterminated quote.
+parse_args_into_argv() {
+  local line="$1"
+  local n=${#line} i=0 c nxt closed
+  local cur="" started=0
+
+  while ((i < n)); do
+    c="${line:i:1}"
+    case "$c" in
+      " " | $'\t')
+        ((started)) && LAUNCH_ARGV+=("$cur")
+        cur=""; started=0; i=$((i + 1))
+        ;;
+      "'")
+        started=1; i=$((i + 1)); closed=0
+        while ((i < n)); do
+          c="${line:i:1}"
+          if [[ $c == "'" ]]; then closed=1; i=$((i + 1)); break; fi
+          cur+="$c"; i=$((i + 1))
+        done
+        ((closed)) || return 1
+        ;;
+      '"')
+        started=1; i=$((i + 1)); closed=0
+        while ((i < n)); do
+          c="${line:i:1}"
+          if [[ $c == '\' ]]; then
+            nxt="${line:i+1:1}"
+            case "$nxt" in
+              '"' | '\') cur+="$nxt"; i=$((i + 2)); continue ;;
+            esac
+            cur+='\'; i=$((i + 1)); continue
+          fi
+          if [[ $c == '"' ]]; then closed=1; i=$((i + 1)); break; fi
+          cur+="$c"; i=$((i + 1))
+        done
+        ((closed)) || return 1
+        ;;
+      '\')
+        started=1
+        nxt="${line:i+1:1}"
+        if [[ -n $nxt ]]; then cur+="$nxt"; i=$((i + 2)); else cur+='\'; i=$((i + 1)); fi
+        ;;
+      *)
+        started=1; cur+="$c"; i=$((i + 1))
+        ;;
+    esac
+  done
+
+  ((started)) && LAUNCH_ARGV+=("$cur")
+  return 0
+}
+
+# argv written as a command line that a shell splits back into exactly these
+# words. Single quotes, because they are the one quoting a shell does nothing
+# inside; an embedded quote is closed, escaped and reopened.
+shell_quote() {
+  local out="" word
+  for word in "$@"; do
+    out+=" '${word//\'/\'\\\'\'}'"
+  done
+  printf '%s' "${out# }"
+}
+
+# Fills LAUNCH_ARGV with the command for one pane.
 #
 # With no arguments this is the same gtk-launch call Omarchy's own launcher
 # makes, which handles entries whose Exec is awkward to reconstruct. With
 # arguments we go through the Exec line instead: gtk-launch treats what follows
 # the desktop id as files to open, so `alacritty -e btop` would arrive as two
 # filenames rather than a flag and its value.
-# Fills LAUNCH_ARGV with the command for one pane.
 build_argv() {
   local id="$1" args="${2:-}"
   LAUNCH_ARGV=()
+
+  if ! is_app_id "$id"; then
+    log "  ! '$id' is not a desktop entry id, skipping it"
+    return 1
+  fi
 
   if [[ -z $args ]]; then
     LAUNCH_ARGV=(gtk-launch "$id.desktop")
@@ -221,24 +449,34 @@ build_argv() {
   fi
 
   local exec_line
-  if exec_line="$(desktop_exec "$id")" && [[ -n $exec_line ]]; then
-    # The Exec line is shell-quoted by the spec and the arguments are the
-    # user's own, so let the shell split both the way a terminal would.
-    if ! eval "LAUNCH_ARGV=($exec_line $args)" 2>/dev/null; then
-      log "  ! could not parse Exec for $id, falling back to gtk-launch"
-      LAUNCH_ARGV=(gtk-launch "$id.desktop")
-    fi
-  else
+  if ! exec_line="$(desktop_exec "$id")" || [[ -z $exec_line ]]; then
     log "  ! no desktop entry for $id, falling back to gtk-launch"
     LAUNCH_ARGV=(gtk-launch "$id.desktop")
+    return 0
   fi
+
+  if ! parse_exec_into_argv "$exec_line"; then
+    log "  ! could not parse Exec for $id, falling back to gtk-launch"
+    LAUNCH_ARGV=(gtk-launch "$id.desktop")
+    return 0
+  fi
+
+  if ! parse_args_into_argv "$args"; then
+    log "  ! unbalanced quotes in the arguments for $id, launching without them"
+    LAUNCH_ARGV=(gtk-launch "$id.desktop")
+    return 0
+  fi
+
+  # An Exec of nothing but field codes leaves no command to run.
+  ((${#LAUNCH_ARGV[@]})) || LAUNCH_ARGV=(gtk-launch "$id.desktop")
+  return 0
 }
 
 launch_app() {
-  build_argv "$1" "${2:-}"
+  build_argv "$1" "${2:-}" || return 1
 
   if ((dry_run)); then
-    log "  launch    uwsm-app -- ${LAUNCH_ARGV[*]}"
+    log "  launch    $(shell_quote uwsm-app -- "${LAUNCH_ARGV[@]}")"
     return 0
   fi
 
@@ -251,14 +489,25 @@ launch_app() {
 # exec rather than setsid, because only Hyprland can tie a workspace rule to the
 # process it spawned — that rule is what keeps the window off the screen.
 launch_app_hidden() {
-  build_argv "$1" "${2:-}"
+  build_argv "$1" "${2:-}" || return 1
 
-  local command="uwsm-app -- ${LAUNCH_ARGV[*]}"
-  # The command goes inside a Lua long string, which processes no escapes at
-  # all; the one sequence that could end it early is stripped.
-  command="${command//]]/}"
+  # Hyprland's exec takes a command line rather than an argv, so these words
+  # have to survive one more trip through a shell. Each is quoted for it:
+  # joining them with spaces would let an argument containing one come apart,
+  # and the test would then be testing a command the real launch never runs.
+  local command
+  command="$(shell_quote uwsm-app -- "${LAUNCH_ARGV[@]}")"
 
-  hyprctl dispatch "hl.dsp.exec_cmd([[$command]], { workspace = \"$TEST_WORKSPACE\" })" >/dev/null 2>&1
+  # The command sits inside a Lua long string, which processes no escapes; the
+  # only sequence that could end it early is its own closing bracket. Nothing
+  # is stripped to make it fit — a command that cannot be quoted intact is one
+  # this run declines to launch, rather than one it launches altered.
+  if [[ $command == *"]==]"* ]]; then
+    log "  ! refusing to launch $1: its command cannot be passed safely"
+    return 1
+  fi
+
+  hypr dispatch "hl.dsp.exec_cmd([==[$command]==], { workspace = \"$TEST_WORKSPACE\" })" >/dev/null 2>&1
 }
 
 # Wait for a window to show up on a workspace that was not there before.
@@ -392,12 +641,17 @@ run_test() {
   # onto the test workspace is somebody else's.
   for addr in ${opened[@]+"${opened[@]}"}; do close_window "$addr"; done
 
-  mkdir -p "$MARKER_DIR" 2>/dev/null
-  printf '%s' "$(jq -nc \
-    --arg profile "$(jq -r '.id' <<<"$profile")" \
-    --argjson ok "$ok" --argjson failed "$bad" \
-    --argjson panes "$(printf '%s\n' ${results[@]+"${results[@]}"} | jq -sc '.')" \
-    '{profile: $profile, at: (now | floor), ok: $ok, failed: $failed, panes: $panes}')" >"$RESULT"
+  # The last run's answer, for the panel to read back. Written into the
+  # directory only once it has been confirmed ours, and over a fresh name so a
+  # stale symlink left in there cannot redirect the write.
+  if ensure_marker_dir; then
+    rm -f -- "$RESULT"
+    printf '%s' "$(jq -nc \
+      --arg profile "$(jq -r '.id' <<<"$profile")" \
+      --argjson ok "$ok" --argjson failed "$bad" \
+      --argjson panes "$(printf '%s\n' ${results[@]+"${results[@]}"} | jq -sc '.')" \
+      '{profile: $profile, at: (now | floor), ok: $ok, failed: $failed, panes: $panes}')" >"$RESULT"
+  fi
 
   local aside=""
   if ((${#surfaced[@]})); then
@@ -441,6 +695,11 @@ build_workspace() {
       addr="${window_of[$from]:-}"
       if [[ -z $addr ]]; then
         log "  ! no window for pane '$from', skipping the pane it splits"
+        ((failed++))
+        continue
+      fi
+      if ! is_address "$addr" || [[ $dir != r && $dir != d ]]; then
+        log "  ! pane '$from' has no usable split to make, skipping it"
         ((failed++))
         continue
       fi
@@ -500,8 +759,12 @@ fi
 command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
 [[ -r $PLAN_JQ ]] || die "missing $PLAN_JQ"
 [[ -r $STORE ]] || { log "no profile store at $STORE"; exit 0; }
+# A regular file, and only so much of it. A store that turned out to be a fifo
+# would park a login on this read for as long as nothing wrote to it, and one
+# that has grown past a megabyte stopped being a profile store a long way back.
+[[ -f $STORE ]] || die "the profile store at $STORE is not a regular file"
 
-store="$(cat "$STORE")"
+store="$(head -c "$MAX_STORE_BYTES" -- "$STORE")"
 jq -e . >/dev/null 2>&1 <<<"$store" || die "profiles.json is not valid JSON"
 
 if [[ -z $profile_id ]]; then
@@ -527,6 +790,12 @@ workspaces="$(jq -r '
   | reduce .[] as $w ([];
       if ($configured | index($w)) and (index($w) == null) then . + [$w] else . end)
   | .[]' <<<"$profile" 2>/dev/null)"
+# Workspace keys are the numbers on the workspace row, and they are pasted into
+# a dispatch and compared against hyprctl's numeric ids. Anything else in the
+# store is not a workspace this can build.
+workspaces="$(
+  for ws in $workspaces; do is_workspace_id "$ws" && printf '%s\n' "$ws"; done
+)"
 [[ -z $workspaces ]] && { log "profile '$profile_name' has no workspaces"; exit 0; }
 
 if ((test_mode)); then
@@ -539,7 +808,10 @@ fi
 # respawn — must not open everything a second time. XDG_RUNTIME_DIR is wiped at
 # logout, so the next real login starts over with a clean slate.
 if ((boot_mode)) && ((!dry_run)); then
-  mkdir -p "$MARKER_DIR" 2>/dev/null
+  # No usable runtime directory means no marker, and no marker means nothing
+  # stops the next shell start from opening the whole profile again. That is
+  # worse than not opening it, so this is where a boot run stops.
+  ensure_marker_dir || die "cannot use $MARKER_DIR, so a login run cannot be tracked"
   if ! (set -o noclobber; : >"$MARKER") 2>/dev/null; then
     log "already applied this session, nothing to do"
     exit 0

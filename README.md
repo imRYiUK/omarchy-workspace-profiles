@@ -80,7 +80,10 @@ omarchy plugin remove io.github.imryiuk.workspace-profiles
   middle to swap the two.
 - **Arguments** for the selected pane go in the field under the canvas. This is
   what turns "open Chromium" into "open Chromium on google.com", and it takes
-  ordinary command-line arguments, so `-e btop` works on a terminal.
+  ordinary command-line arguments, so `-e btop` works on a terminal. Quote them
+  the way you would in a terminal — `--title "two words"` is one argument — but
+  it is a field for arguments, not a shell: a `$HOME`, a `*` or a `;` in there
+  is handed to the app as those characters, and nothing is expanded or run.
 - **Launch order** along the bottom is the order the workspaces get built in,
   and the first of them is where you are left once everything has opened. Drag a
   workspace along the strip to reorder it. If a workspace was already open it is
@@ -224,6 +227,12 @@ anything.
 | `~/.config/omarchy/workspace-profiles/profiles.json` | your profiles |
 | `$XDG_RUNTIME_DIR/omarchy-workspace-profiles/applied` | the once-per-login marker |
 | `$XDG_RUNTIME_DIR/omarchy-workspace-profiles/test-result.json` | the last test run |
+
+The bottom two live wherever `XDG_RUNTIME_DIR` points, which is where they
+belong: it is private to you and emptied at logout, so the marker lasts exactly
+one login. Without it they fall back to `$TMPDIR/omarchy-workspace-profiles-$UID`,
+and either way the directory has to be yours and not a symlink before anything
+is written into it.
 
 `profiles.json` is plain and hand-editable. A layout is a binary tree, the same
 shape as dwindle's:
