@@ -406,7 +406,7 @@ Panel {
       onActivateRequested: appSearch.searchField.forceActiveFocus()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(text) {
-        if (text >= "1" && text <= "5") root.currentWorkspace = parseInt(text)
+        if (text >= "1" && text <= "9") root.currentWorkspace = parseInt(text)
         else if (text === "s") editor.split(root.selectedPath, "v")
         else if (text === "S") editor.split(root.selectedPath, "h")
         else if (text === "/") appSearch.searchField.forceActiveFocus()

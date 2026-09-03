@@ -15,7 +15,7 @@
 // "v" splits into left/right, "h" into top/bottom. `ratio` is the fraction of
 // the split taken by child `a`.
 
-var WORKSPACES = [1, 2, 3, 4, 5]
+var WORKSPACES = [1, 2, 3, 4, 5, 6, 7, 8, 9]
 var MIN_RATIO = 0.15
 var MAX_RATIO = 0.85
 
