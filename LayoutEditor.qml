@@ -36,6 +36,16 @@ Item {
 
   // Key of the divider being dragged right now, for the delegate to paint.
   property string resizingKey: ""
+  // Whether that divider is currently sitting on one of the snap fractions.
+  // Only ever true mid-drag: it is the feedback that says the number under the
+  // pointer is round, which is otherwise invisible on a scale model.
+  property bool resizingSnapped: false
+
+  // How close to a snap fraction the pointer has to come, in canvas pixels.
+  // Small enough that the ratios between the presets are still comfortably
+  // reachable -- the point of snapping here is to make 50% easy to hit, not to
+  // reduce the layout to fifths.
+  readonly property int snapDistance: Style.space(9)
 
   signal treeEdited(var next)
   signal selectionChanged(var path)
@@ -172,8 +182,13 @@ Item {
       // Faint but present at rest. At alpha 0 a divider could only be found by
       // sweeping the pointer and watching for the cursor to change, which made
       // resizing a hunt and lit up every pane it crossed on the way.
+      readonly property bool dragging: root.resizingKey === divider.modelData.key
+
+      // Solid while it is parked on a quarter, half or third, faded while it is
+      // between them. That difference is the whole readout: it says the ratio
+      // is exact without putting a number on screen.
       color: Util.alpha(Color.accent,
-        root.resizingKey === divider.modelData.key ? 0.75
+        divider.dragging ? (root.resizingSnapped ? 1.0 : 0.55)
           : (dividerHover.containsMouse ? 0.4 : 0.16))
 
       Behavior on color { ColorAnimation { duration: 110 } }
@@ -233,7 +248,7 @@ Item {
     // first half across `span - gap` and puts the divider's near edge at the
     // end of it, so reading a ratio back off the full span, from a pointer
     // sitting at the divider's centre, lands short by half a gap.
-    function applyFromPoint(mx, my) {
+    function applyFromPoint(mx, my, modifiers) {
       var d = resizer.active
       if (!d) return
 
@@ -242,7 +257,16 @@ Item {
       if (span <= 0) return
 
       var offset = (vertical ? mx - d.originX : my - d.originY) - root.gap / 2
-      root.setRatio(d.path, offset / span)
+      var raw = offset / span
+
+      // Held Ctrl means "I know where I want this": the drag runs free with no
+      // snap points at all, for the one layout that has to sit just off a
+      // quarter.
+      var free = (modifiers & Qt.ControlModifier) !== 0
+      var ratio = free ? raw : Model.snapRatio(raw, root.snapDistance / span)
+
+      root.resizingSnapped = !free && ratio !== raw
+      root.setRatio(d.path, ratio)
     }
 
     onPressed: function(mouse) {
@@ -258,11 +282,11 @@ Item {
     }
 
     onPositionChanged: function(mouse) {
-      if (pressed) applyFromPoint(mouse.x, mouse.y)
+      if (pressed) applyFromPoint(mouse.x, mouse.y, mouse.modifiers)
     }
 
-    onReleased: { resizer.active = null; root.resizingKey = "" }
-    onCanceled: { resizer.active = null; root.resizingKey = "" }
+    onReleased: { resizer.active = null; root.resizingKey = ""; root.resizingSnapped = false }
+    onCanceled: { resizer.active = null; root.resizingKey = ""; root.resizingSnapped = false }
 
     onDoubleClicked: function(mouse) {
       var hit = dividerAt(mouse.x, mouse.y)

@@ -49,6 +49,12 @@ Panel {
   // than closing on you or doing nothing visible.
   property bool savedHint: false
 
+  // Result of the last Capture or Run, shown next to the buttons. Both can
+  // finish having done nothing for a reason the desktop does not show —
+  // windows that could not be named, workspaces that were already open — and
+  // a button that looks like it did nothing is the same as a broken one.
+  property string statusHint: ""
+
   // What we last wrote, so the change notification our own save triggers does
   // not bounce back and overwrite an edit made in the meantime.
   property string lastWritten: ""
@@ -170,6 +176,141 @@ Panel {
     selectedPath = []
   }
 
+  // ------------------------------------------------- capture what is open
+  //
+  // The other direction of the editor: arrange the real workspace by dragging
+  // its windows about, then take that shape as the profile. Dragging tiled
+  // windows is something Hyprland already does well, and reproducing a layout
+  // you are looking at, pane by pane, on a scale model is the tedious half of
+  // setting a profile up.
+  //
+  // The workspace read is the one whose tab is open, not the one in front of
+  // you -- the panel is being looked at on some workspace of its own, and the
+  // tab is the only unambiguous statement of which layout is being edited.
+
+  function captureCurrent() {
+    if (!activeProfile) return
+    statusHint = ""
+    captureClients.running = true
+  }
+
+  // A window reports the class it was launched with; a profile stores a
+  // desktop entry id. Nothing guarantees the two are the same string, so this
+  // works down from an exact match to progressively looser ones, and gives up
+  // rather than guessing wrong -- an unmatched window still becomes a pane,
+  // just an empty one waiting for an app to be dropped in.
+  function desktopIdForClass(cls) {
+    var want = String(cls || "").toLowerCase()
+    if (want === "") return ""
+
+    var values = DesktopEntries.applications.values || []
+    var tail = function(id) {
+      var parts = String(id).toLowerCase().split(".")
+      return parts[parts.length - 1]
+    }
+    var bare = function(text) { return String(text).toLowerCase().replace(/[^a-z0-9]/g, "") }
+
+    var i, entry
+    for (i = 0; i < values.length; i++) {
+      if (String(values[i].id).toLowerCase() === want) return String(values[i].id)
+    }
+    // StartupWMClass exists precisely to tie a window back to its entry, so it
+    // outranks every guess below it.
+    for (i = 0; i < values.length; i++) {
+      entry = values[i]
+      if (entry.startupClass && String(entry.startupClass).toLowerCase() === want)
+        return String(entry.id)
+    }
+    // org.gnome.Nautilus vs nautilus.
+    for (i = 0; i < values.length; i++) {
+      if (tail(values[i].id) === want) return String(values[i].id)
+    }
+    // brave-browser vs brave_browser vs BraveBrowser.
+    for (i = 0; i < values.length; i++) {
+      if (bare(values[i].id) === bare(want)) return String(values[i].id)
+    }
+    // A browser web app is named after its own URL, not after the .desktop
+    // file that launched it: --app=https://www.facebook.com/messages/ opens a
+    // window of class brave-www.facebook.com__messages_-Profile_3. Flatten
+    // both sides to alphanumerics and look for one inside the other, rather
+    // than reproducing Chromium's exact spelling of it, which differs between
+    // versions and between Brave and Chrome.
+    var flat = function(text) {
+      return String(text).toLowerCase().replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+    }
+    var flatClass = flat(want)
+    var bestId = "", bestLength = 0
+
+    for (i = 0; i < values.length; i++) {
+      entry = values[i]
+      var exec = String(entry.execString || (entry.command || []).join(" ") || "")
+      var app = exec.match(/--app=(\S+)/)
+      if (!app) continue
+
+      var token = flat(String(app[1]).replace(/^[a-z]+:\/\//i, ""))
+      // Short tokens match too much: a two-letter host would hit half the
+      // browser windows open. Longest match wins, so a URL with a path beats
+      // the bare host it sits on.
+      if (token.length < 6 || token.length <= bestLength) continue
+      if (flatClass.indexOf(token) >= 0) { bestId = String(entry.id); bestLength = token.length }
+    }
+    if (bestId !== "") return bestId
+
+    for (i = 0; i < values.length; i++) {
+      entry = values[i]
+      if (!entry.noDisplay && bare(entry.name) === bare(want)) return String(entry.id)
+    }
+    return ""
+  }
+
+  function applyCapture(raw) {
+    var clients
+    try {
+      clients = JSON.parse(raw)
+    } catch (e) {
+      statusHint = "Could not read the running windows"
+      statusHintTimer.restart()
+      return
+    }
+    if (!Array.isArray(clients)) clients = []
+
+    var boxes = []
+    var unmatched = 0
+
+    for (var i = 0; i < clients.length; i++) {
+      var c = clients[i]
+      var ws = c && c.workspace ? Number(c.workspace.id) : NaN
+      if (ws !== root.currentWorkspace) continue
+      // Floating windows sit over the layout rather than in it, and an
+      // unmapped or hidden one has no place on screen to read.
+      if (c.floating || c.hidden || c.mapped === false) continue
+
+      var at = c.at || [], size = c.size || []
+      var w = Number(size[0]), h = Number(size[1])
+      if (!(w > 0 && h > 0)) continue
+
+      var app = desktopIdForClass(c.class || c.initialClass)
+      if (app === "") app = desktopIdForClass(c.initialClass)
+      if (app === "") unmatched++
+
+      boxes.push({ x: Number(at[0]), y: Number(at[1]), w: w, h: h, app: app, args: "" })
+    }
+
+    if (boxes.length === 0) {
+      statusHint = "Workspace " + root.currentWorkspace + " has no tiled windows"
+      statusHintTimer.restart()
+      return
+    }
+
+    setTree(Model.treeFromBoxes(boxes))
+    selectedPath = []
+
+    statusHint = "Captured " + boxes.length + (boxes.length === 1 ? " window" : " windows")
+      + (unmatched > 0 ? " — " + unmatched + " left empty, app not recognised" : "")
+    statusHintTimer.restart()
+  }
+
   // ------------------------------------------------------------- profiles
 
   function selectProfile(id) {
@@ -252,7 +393,43 @@ Panel {
 
     var argv = [root.applyScript, "--profile", String(activeId)]
     if (!notifyOnApply) argv.push("--no-notify")
-    Util.execArgv(argv)
+
+    statusHint = "Building…"
+    statusHintTimer.stop()
+    runApply.command = argv
+    runApply.running = true
+  }
+
+  // The launcher will not build into a workspace that already has windows: the
+  // first app is meant to fill it and every split is measured from there. That
+  // is the right call, but it means Run right after a Capture always declines —
+  // capturing a workspace is proof it has windows on it — and from the panel
+  // that was indistinguishable from a dead button. It reports what it did on
+  // stderr, so read it back and say so.
+  function applyRunResult(text) {
+    var skipped = []
+    var built = []
+    var lines = String(text || "").split("\n")
+
+    for (var i = 0; i < lines.length; i++) {
+      var already = lines[i].match(/^workspace (\S+) already has windows/)
+      if (already) { skipped.push(already[1]); continue }
+      var opened = lines[i].match(/^\s*dispatch\s+.*workspace = "([^"]+)"/)
+      if (opened && built.indexOf(opened[1]) < 0) built.push(opened[1])
+    }
+
+    // Only the workspaces it declined are worth a line: when it built
+    // something, the desktop in front of you is the report.
+    if (skipped.length === 0) {
+      statusHint = built.length > 0 ? "" : "Nothing to open in this profile"
+    } else if (built.length === 0) {
+      statusHint = "Nothing opened — workspace" + (skipped.length === 1 ? " " : "s ")
+        + skipped.join(", ") + " already had windows"
+    } else {
+      statusHint = "Workspace" + (skipped.length === 1 ? " " : "s ") + skipped.join(", ")
+        + " already had windows and " + (skipped.length === 1 ? "was" : "were") + " left alone"
+    }
+    if (statusHint !== "") statusHintTimer.restart()
   }
 
   // Checks every app starts, on a hidden workspace, then closes what it opened
@@ -395,6 +572,27 @@ Panel {
     onTriggered: root.savedHint = false
   }
 
+  Timer {
+    id: statusHintTimer
+    interval: 8000
+    onTriggered: root.statusHint = ""
+  }
+
+  Process {
+    id: runApply
+    stderr: StdioCollector {
+      onStreamFinished: root.applyRunResult(text)
+    }
+  }
+
+  Process {
+    id: captureClients
+    command: ["hyprctl", "-j", "clients"]
+    stdout: StdioCollector {
+      onStreamFinished: root.applyCapture(text)
+    }
+  }
+
   // --------------------------------------------------------------- the UI
 
   KeyboardPanel {
@@ -441,6 +639,13 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(6)
             visible: !root.renaming
+            // Clipped rather than overlapping: a chip half cut off at the
+            // Rename button still reads as "there are more profiles over
+            // there", where a chip drawn under the buttons reads as a broken
+            // panel. The panel widens to its content first, so this only bites
+            // once there are more profiles than the screen has room for.
+            width: Math.max(0, parent.width - profileActions.width - Style.space(10))
+            clip: true
 
             Repeater {
               model: root.store.profiles
@@ -524,6 +729,7 @@ Panel {
           }
 
           Row {
+            id: profileActions
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(6)
@@ -555,8 +761,20 @@ Panel {
             }
 
             Text {
+              id: statusLine
               anchors.verticalCenter: parent.verticalCenter
-              visible: root.hasTestResult && !root.savedHint
+              visible: root.statusHint !== "" && !root.savedHint && !root.renaming
+              text: root.statusHint
+              width: Math.min(implicitWidth, Style.space(230))
+              elide: Text.ElideRight
+              color: Util.alpha(Color.foreground, 0.6)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+            }
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.hasTestResult && !root.savedHint && root.statusHint === ""
               text: root.testSummary
               color: root.testResult && root.testResult.failed > 0
                 ? Color.urgent : Util.alpha(Color.foreground, 0.6)
@@ -566,7 +784,7 @@ Panel {
 
             Button {
               text: "Run"
-              tooltipText: "Build this profile into the running session now. Workspaces that already have windows are left alone"
+              tooltipText: "Build this profile into the running session now. A workspace that already has windows is left alone, so close them first if you want it rebuilt"
               visible: !root.renaming
               horizontalPadding: Style.space(9)
               verticalPadding: Style.space(3)
@@ -660,14 +878,29 @@ Panel {
             }
           }
 
-          Button {
+          // Both act on the workspace whose tab is open rather than on the
+          // profile, which is why they sit on this row and not up with Save.
+          Row {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            text: "Clear workspace"
-            visible: Model.isConfigured(root.currentWorkspaceData)
-            horizontalPadding: Style.space(9)
-            verticalPadding: Style.space(3)
-            onClicked: root.clearWorkspace()
+            spacing: Style.space(6)
+
+            Button {
+              text: "Capture"
+              tooltipText: "Read workspace " + root.currentWorkspace
+                + " as it is arranged on screen right now, and make that this layout"
+              horizontalPadding: Style.space(9)
+              verticalPadding: Style.space(3)
+              onClicked: root.captureCurrent()
+            }
+
+            Button {
+              text: "Clear workspace"
+              visible: Model.isConfigured(root.currentWorkspaceData)
+              horizontalPadding: Style.space(9)
+              verticalPadding: Style.space(3)
+              onClicked: root.clearWorkspace()
+            }
           }
         }
 

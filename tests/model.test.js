@@ -253,4 +253,85 @@ test("profile ids stay unique", () => {
   assert.strictEqual(M.uniqueProfileId(store, "After Hours"), "after-hours")
 })
 
+// ---- snapping
+
+test("a ratio near a fraction lands exactly on it", () => {
+  assert.strictEqual(M.snapRatio(0.49, 0.05), 0.5)
+  assert.strictEqual(M.snapRatio(0.26, 0.05), 0.25)
+  assert.ok(Math.abs(M.snapRatio(0.34, 0.05) - 1 / 3) < 1e-9)
+})
+
+test("a ratio between fractions is left where it is", () => {
+  assert.strictEqual(M.snapRatio(0.42, 0.02), 0.42)
+})
+
+test("zero tolerance snaps nothing", () => {
+  assert.strictEqual(M.snapRatio(0.499, 0), 0.499)
+})
+
+test("snapping still respects the ratio limits", () => {
+  assert.strictEqual(M.snapRatio(0.001, 0.05), 0.05)
+})
+
+// ---- capturing a layout back off the screen
+
+// The rectangles a tree draws, as the boxes a capture would be handed.
+const boxesOf = (tree, gap) =>
+  M.layoutRects(tree, { x: 100, y: 60, w: 1920, h: 1080 }, gap).leaves
+    .map((l) => ({ x: l.x, y: l.y, w: l.w, h: l.h, app: l.node.app, args: "" }))
+
+test("a captured layout rebuilds the tree it came from", () => {
+  const tree = {
+    type: "split", dir: "v", ratio: 0.25, a: leaf("a"),
+    b: { type: "split", dir: "h", ratio: 0.5, a: leaf("b"), b: leaf("c") }
+  }
+  assert.deepStrictEqual(M.treeFromBoxes(boxesOf(tree, 6)), tree)
+})
+
+test("a gap between windows is taken out of the ratio, not counted as layout", () => {
+  const tree = { type: "split", dir: "v", ratio: 0.5, a: leaf("a"), b: leaf("b") }
+  // Same layout, three different gaps: the ratio must not drift with the gap.
+  for (const gap of [0, 6, 24]) {
+    assert.strictEqual(M.treeFromBoxes(boxesOf(tree, gap)).ratio, 0.5)
+  }
+})
+
+test("a capture keeps a ratio that is deliberately not a round one", () => {
+  const tree = { type: "split", dir: "v", ratio: 0.37, a: leaf("a"), b: leaf("b") }
+  assert.ok(Math.abs(M.treeFromBoxes(boxesOf(tree, 6)).ratio - 0.37) < 0.005)
+})
+
+test("a single window captures as a bare leaf", () => {
+  assert.deepStrictEqual(
+    M.treeFromBoxes([{ x: 0, y: 0, w: 800, h: 600, app: "foot", args: "" }]),
+    leaf("foot"))
+})
+
+test("nothing on the workspace captures as an empty leaf", () => {
+  assert.deepStrictEqual(M.treeFromBoxes([]), leaf(""))
+})
+
+test("a two by two grid captures as two splits inside one", () => {
+  const grid = [
+    { x: 0, y: 0, w: 950, h: 500, app: "a", args: "" },
+    { x: 960, y: 0, w: 950, h: 500, app: "b", args: "" },
+    { x: 0, y: 510, w: 950, h: 500, app: "c", args: "" },
+    { x: 960, y: 510, w: 950, h: 500, app: "d", args: "" }
+  ]
+  const out = M.treeFromBoxes(grid)
+  assert.strictEqual(out.type, "split")
+  assert.strictEqual(out.a.type, "split")
+  assert.strictEqual(out.b.type, "split")
+  assert.strictEqual(apps(out), "a,c,b,d")
+})
+
+test("overlapping windows still all end up in the tree", () => {
+  const overlapping = [
+    { x: 0, y: 0, w: 800, h: 600, app: "a", args: "" },
+    { x: 400, y: 0, w: 800, h: 600, app: "b", args: "" },
+    { x: 200, y: 300, w: 800, h: 600, app: "c", args: "" }
+  ]
+  assert.strictEqual(M.leafPaths(M.treeFromBoxes(overlapping)).length, 3)
+})
+
 console.log(`${passed} passed`)
