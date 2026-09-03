@@ -34,6 +34,9 @@ Item {
   readonly property var rects: Model.layoutRects(
     tree, { x: 0, y: 0, w: Math.max(0, width), h: Math.max(0, height) }, gap)
 
+  // Key of the divider being dragged right now, for the delegate to paint.
+  property string resizingKey: ""
+
   signal treeEdited(var next)
   signal selectionChanged(var path)
 
@@ -146,6 +149,12 @@ Item {
 
   // Declared after the panes so they sit on top: a divider is only 5px wide and
   // its grab area deliberately overhangs the panes on either side.
+  //
+  // The delegate paints and reports hover, and nothing more. It cannot own the
+  // drag: `rects` is rebuilt from the tree on every ratio change, so each step
+  // of a drag replaces this Repeater's model with a fresh array and every
+  // delegate under it is destroyed and remade -- taking the grab with it. That
+  // is why the drag lives on `resizer` below, which outlives the rebuild.
   Repeater {
     model: root.rects.dividers
 
@@ -163,47 +172,102 @@ Item {
       // Faint but present at rest. At alpha 0 a divider could only be found by
       // sweeping the pointer and watching for the cursor to change, which made
       // resizing a hunt and lit up every pane it crossed on the way.
-      color: Util.alpha(Color.accent, dividerMouse.pressed ? 0.75 : (dividerMouse.containsMouse ? 0.4 : 0.16))
+      color: Util.alpha(Color.accent,
+        root.resizingKey === divider.modelData.key ? 0.75
+          : (dividerHover.containsMouse ? 0.4 : 0.16))
 
       Behavior on color { ColorAnimation { duration: 110 } }
 
+      // Hover only, so it never holds a press it could be destroyed still
+      // holding. Reaches past the painted divider so a 5px gap is still an easy
+      // target; the extra width is invisible and overlaps the panes.
       MouseArea {
-        id: dividerMouse
-        // Reaches past the painted divider so a 5px gap is still an easy
-        // target; the extra width is invisible and overlaps the panes.
+        id: dividerHover
         anchors.centerIn: parent
         width: divider.vertical ? Math.max(divider.width, Style.space(16)) : divider.width
         height: divider.vertical ? divider.height : Math.max(divider.height, Style.space(16))
+        acceptedButtons: Qt.NoButton
         hoverEnabled: true
-        preventStealing: true
         cursorShape: divider.vertical ? Qt.SplitHCursor : Qt.SplitVCursor
-
-        // Driven from the pointer's absolute position inside the split rather
-        // than from a delta: the divider moves under the cursor as the ratio
-        // changes, and re-deriving from where the cursor actually is keeps the
-        // two from drifting apart over a long drag.
-        function applyFromPoint(mx, my) {
-          var point = mapToItem(root, mx, my)
-
-          // The inverse of what layoutRects did, gap included. It lays the
-          // first half out across `span - gap` and then puts the divider's
-          // near edge at its end, so a ratio read back off the full span, from
-          // the pointer sitting at the divider's centre, lands short by half a
-          // gap -- little at the middle, growing towards either end, and enough
-          // for the divider to visibly trail the cursor.
-          var span = (divider.vertical ? divider.modelData.spanW : divider.modelData.spanH) - root.gap
-          if (span <= 0) return
-          var offset = (divider.vertical
-            ? point.x - divider.modelData.originX
-            : point.y - divider.modelData.originY) - root.gap / 2
-          root.setRatio(divider.modelData.path, offset / span)
-        }
-
-        onPositionChanged: function(mouse) {
-          if (pressed) applyFromPoint(mouse.x, mouse.y)
-        }
-        onDoubleClicked: root.setRatio(divider.modelData.path, 0.5)
       }
+    }
+  }
+
+  // The drag itself, owned by the canvas rather than by any delegate.
+  //
+  // Hover stays off here so the panes underneath keep receiving it -- their
+  // control rows depend on it -- and a press that is not on a divider is
+  // declined outright, so selecting, dragging and dropping panes are untouched.
+  MouseArea {
+    id: resizer
+    anchors.fill: parent
+    z: 3
+    hoverEnabled: false
+    preventStealing: true
+    acceptedButtons: Qt.LeftButton
+
+    // A copy, not a reference into `rects`: that array is replaced on every
+    // step of the drag, while the split's own rectangle does not move, so the
+    // numbers captured at press stay right for the whole gesture.
+    property var active: null
+
+    function dividerAt(mx, my) {
+      var band = Style.space(16)
+      var list = root.rects.dividers
+
+      for (var i = 0; i < list.length; i++) {
+        var d = list[i]
+        var vertical = d.dir === "v"
+        var x0 = vertical ? d.x + d.w / 2 - band / 2 : d.x
+        var x1 = vertical ? d.x + d.w / 2 + band / 2 : d.x + d.w
+        var y0 = vertical ? d.y : d.y + d.h / 2 - band / 2
+        var y1 = vertical ? d.y + d.h : d.y + d.h / 2 + band / 2
+        if (mx >= x0 && mx <= x1 && my >= y0 && my <= y1) return d
+      }
+      return null
+    }
+
+    // Driven from the pointer's absolute position inside the split rather than
+    // from a delta, so the divider cannot drift away from the cursor over a
+    // long drag. The arithmetic is the inverse of layoutRects: it lays the
+    // first half across `span - gap` and puts the divider's near edge at the
+    // end of it, so reading a ratio back off the full span, from a pointer
+    // sitting at the divider's centre, lands short by half a gap.
+    function applyFromPoint(mx, my) {
+      var d = resizer.active
+      if (!d) return
+
+      var vertical = d.dir === "v"
+      var span = (vertical ? d.spanW : d.spanH) - root.gap
+      if (span <= 0) return
+
+      var offset = (vertical ? mx - d.originX : my - d.originY) - root.gap / 2
+      root.setRatio(d.path, offset / span)
+    }
+
+    onPressed: function(mouse) {
+      var hit = dividerAt(mouse.x, mouse.y)
+      if (!hit) { mouse.accepted = false; return }
+
+      resizer.active = {
+        path: hit.path, dir: hit.dir, key: hit.key,
+        originX: hit.originX, originY: hit.originY,
+        spanW: hit.spanW, spanH: hit.spanH
+      }
+      root.resizingKey = hit.key
+    }
+
+    onPositionChanged: function(mouse) {
+      if (pressed) applyFromPoint(mouse.x, mouse.y)
+    }
+
+    onReleased: { resizer.active = null; root.resizingKey = "" }
+    onCanceled: { resizer.active = null; root.resizingKey = "" }
+
+    onDoubleClicked: function(mouse) {
+      var hit = dividerAt(mouse.x, mouse.y)
+      if (hit) root.setRatio(hit.path, 0.5)
+      else mouse.accepted = false
     }
   }
 }
