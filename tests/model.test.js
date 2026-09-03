@@ -142,8 +142,8 @@ test("swapping a pane with one inside it is refused", () => {
 
 test("ratios are clamped so a divider cannot be dragged off the edge", () => {
   const tree = M.splitAt(leaf("a"), [], "v")
-  assert.strictEqual(M.setRatioAt(tree, [], 0.01).ratio, 0.15)
-  assert.strictEqual(M.setRatioAt(tree, [], 0.99).ratio, 0.85)
+  assert.strictEqual(M.setRatioAt(tree, [], 0.01).ratio, 0.05)
+  assert.strictEqual(M.setRatioAt(tree, [], 0.99).ratio, 0.95)
   assert.strictEqual(M.setRatioAt(tree, [], 0.62).ratio, 0.62)
 })
 
@@ -213,7 +213,7 @@ test("a store read off disk is coerced into shape", () => {
     activeProfile: "gone"
   })
   assert.strictEqual(store.profiles[0].workspaces["1"].root.dir, "v", "an unknown direction falls back")
-  assert.strictEqual(store.profiles[0].workspaces["1"].root.ratio, 0.85, "an absurd ratio is clamped")
+  assert.strictEqual(store.profiles[0].workspaces["1"].root.ratio, 0.95, "an absurd ratio is clamped")
   assert.strictEqual(store.activeProfile, "x", "a selection pointing at nothing falls back to the first profile")
 })
 
