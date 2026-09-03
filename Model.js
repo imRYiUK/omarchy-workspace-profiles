@@ -224,6 +224,19 @@ function setArgsAt(root, path, args) {
   return replaceAt(root, path, leaf(target.app, args))
 }
 
+// Turns a split from side-by-side into stacked, or back. A leaf has no
+// direction of its own -- what decides how a pane sits against its neighbour is
+// the split above it -- so this is how a layout is reshaped without any app
+// leaving the pane it is in.
+function flipAt(root, path) {
+  var node = nodeAt(root, path)
+  if (!isSplit(node)) return root
+
+  var next = clone(node)
+  next.dir = node.dir === "h" ? "v" : "h"
+  return replaceAt(root, path, next)
+}
+
 function setRatioAt(root, path, ratio) {
   var target = nodeAt(root, path)
   if (!isSplit(target)) return root
@@ -444,6 +457,7 @@ if (typeof module !== "undefined" && module.exports) {
     normalizeNode: normalizeNode, nodeAt: nodeAt, replaceAt: replaceAt, layoutRects: layoutRects,
     isAncestor: isAncestor, leafPaths: leafPaths, splitAt: splitAt, removeAt: removeAt,
     setAppAt: setAppAt, setArgsAt: setArgsAt, setRatioAt: setRatioAt, swap: swap,
+    flipAt: flipAt,
     assignApp: assignApp, movePane: movePane, pathAfterRemoval: pathAfterRemoval,
     syncSequence: syncSequence, moveInSequenceTo: moveInSequenceTo,
     filledLeaves: filledLeaves, isConfigured: isConfigured, workspaceSummary: workspaceSummary,

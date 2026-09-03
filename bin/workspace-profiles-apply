@@ -612,7 +612,7 @@ run_test() {
       before="$(all_addresses)"
       launch_app_hidden "$app" "$args"
 
-      if addr="$(wait_for_test_window "$before" 10)"; then
+      if addr="$(wait_for_test_window "$before" "$window_timeout")"; then
         local where hidden
         where="$(workspace_name_of "$addr")"
         if [[ $where == "$TEST_WORKSPACE" ]]; then
