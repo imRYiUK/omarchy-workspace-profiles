@@ -58,8 +58,11 @@ omarchy plugin remove io.github.imryiuk.workspace-profiles
 - **Split a pane** with the `◫` buttons that appear when you hover it — the
   first splits side by side, the second top and bottom. `✕` removes a pane and
   gives its space back to its neighbour.
-- **Drag a divider** to set how the space is shared. Double-click one to even it
-  up again.
+- **Drag a divider** to set how the space is shared. The drag is continuous —
+  a pane you want at 37% goes to 37% — but passing near a quarter, third or
+  half lands on it exactly, and the divider goes solid to say so. Hold `Ctrl`
+  while dragging to turn the snapping off. Double-click one to even it up
+  again.
 ```
             ┌───────────────────┐
             │ ╲   above (rows) ╱│   drop near an edge and the incoming app
@@ -98,6 +101,15 @@ than it is tall becomes two columns, a taller one becomes two rows. So a third
 app dropped beside two columns lands under one of them rather than making a
 third thin column.
 
+**Capture**, on the workspace row next to Clear workspace, goes the other way: arrange the real workspace by dragging its
+windows about in Hyprland, then take that shape as the layout. It reads the
+workspace whose tab is open — not the one you happen to be looking at — and
+turns the tiled windows on it into panes, matching each window back to the app
+that opened it. Gaps and the bar's reserved strip are measured out rather than
+counted as layout, so a hand-made half comes back as a half and not as 0.4989.
+A window it cannot name still becomes a pane, just an empty one, and the count
+of those is reported next to the button.
+
 **Save** writes the profile down. It does not touch the desktop you are on —
 the layout opens on its own at your next login, the way an i3 config takes hold
 when i3 restarts. To build it into the running session there and then, right
@@ -122,11 +134,18 @@ really checked, and are really closed again without the desktop you are looking
 at changing at all. Each pane then carries a ✓ or a `!`, and a notification
 gives the tally.
 
-One case surfaces: an app that is **already running** and only ever has one
-process — Nautilus, most browsers — does not start a new process for Hyprland's
-workspace rule to catch. The running copy is asked for a window and opens it
-wherever you are. The test notices, still counts it as working, closes the
-window, and tells you it happened.
+An app with a window **already open** is not started again. It is asked to,
+answers by raising the window it has, and nothing new appears for the test to
+find — which used to be recorded as a failure for the one kind of app that most
+obviously works, since it is on screen while you read the result. A window on
+screen already answers the question the test is asking, so the pane passes and
+the line says the app was left alone.
+
+One case still surfaces: an app that is already running but opens a **second**
+window — a browser web app, mostly — does start something for Hyprland to
+catch, but the running copy puts it wherever you are rather than on the test
+workspace. The test notices, still counts it as working, closes the window, and
+tells you it happened.
 
 ### At login
 

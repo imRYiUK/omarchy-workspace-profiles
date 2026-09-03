@@ -173,6 +173,37 @@ notify_step() {
   [[ $id =~ ^[0-9]+$ ]] && progress_id="$id"
 }
 
+# The window class the entry says its app will use. StartupWMClass exists to
+# tie a window back to the entry that opened it; without one, most apps use the
+# desktop id itself.
+desktop_wm_class() {
+  local file name
+  file="$(desktop_file_for "$1")" || { printf '%s' "$1"; return 0; }
+  name="$(awk '
+    /^\[Desktop Entry\]/         { in_entry = 1; next }
+    /^\[/                        { in_entry = 0 }
+    in_entry && /^StartupWMClass=/ { sub(/^StartupWMClass=/, ""); print; exit }
+  ' "$file")"
+  printf '%s' "${name:-$1}"
+}
+
+# True when a window of this app is already open somewhere.
+#
+# A single-instance app — Signal, and most GTK ones — answers a second launch
+# by raising the window it already has rather than making another. Nothing new
+# ever appears, so waiting for a new window times out and the test calls a
+# perfectly working app broken. An app with a window on screen has demonstrably
+# started, which is the whole question the test is asking.
+window_open_for() {
+  local id="$1" class
+  class="$(desktop_wm_class "$id")"
+  hypr_json clients -j | jq -e \
+    --arg class "${class,,}" --arg id "${id,,}" --arg tail "${id##*.}" '
+    any(.[]; (.class // "" | ascii_downcase) as $k
+      | $k == $class or $k == $id or $k == ($tail | ascii_downcase))
+  ' >/dev/null 2>&1
+}
+
 # The desktop entry's Name, for a line a person reads; the id if there is none.
 app_display_name() {
   local file name
@@ -608,6 +639,17 @@ run_test() {
 
     while IFS=$'\t' read -r op from pane dir ratio app args; do
       [[ -z ${op:-} ]] && continue
+
+      # Checked before launching, not after: starting a second copy of an app
+      # that is already up is what produces the false failure in the first
+      # place, and it can also steal the focus of the window it raises.
+      if window_open_for "$app"; then
+        results+=("$(jq -nc --arg k "$ws:$pane" --arg a "$app" \
+          '{key: $k, app: $a, ok: true, hidden: true, running: true}')")
+        ((ok++))
+        log "  ok   $app${args:+ $args}  (already open, so it was not started again)"
+        continue
+      fi
 
       before="$(all_addresses)"
       launch_app_hidden "$app" "$args"

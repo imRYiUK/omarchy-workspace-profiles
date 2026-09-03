@@ -454,9 +454,189 @@ function uniqueProfileId(store, name) {
   return base + "-" + Date.now()
 }
 
+// ------------------------------------------------------------- snapping
+//
+// The fractions a divider settles onto. A drag stays continuous — a pane you
+// want at 37% goes to 37% — but passing close to one of these lands on it
+// exactly, so the common layouts are reachable by hand and come out as round
+// numbers instead of 0.4993.
+//
+// Thirds are in the list because a 1/3 column next to a 2/3 one is the layout
+// people reach for after halves, and hitting 0.3333 freehand is luck.
+var SNAP_RATIOS = [0.25, 1 / 3, 0.5, 2 / 3, 0.75]
+
+// `tolerance` is in ratio units, so the caller converts a pixel distance
+// against the span it is dragging across: the pull towards a fraction should
+// feel the same on a narrow split as on a wide one, and a fixed ratio window
+// would be a wide grab on one and a twitch on the other.
+function snapRatio(ratio, tolerance) {
+  var n = Number(ratio)
+  if (!isFinite(n)) return 0.5
+
+  var tol = Number(tolerance)
+  if (!isFinite(tol) || tol <= 0) return clampRatio(n)
+
+  var best = null
+  var bestDistance = tol
+  for (var i = 0; i < SNAP_RATIOS.length; i++) {
+    var distance = Math.abs(n - SNAP_RATIOS[i])
+    if (distance < bestDistance) {
+      bestDistance = distance
+      best = SNAP_RATIOS[i]
+    }
+  }
+  return clampRatio(best === null ? n : best)
+}
+
+// True when a ratio is sitting on one of the snap points, for the canvas to
+// paint. Compared with a small epsilon rather than for equality because the
+// value has been through clampRatio and a JSON round trip.
+function isSnapped(ratio) {
+  var n = Number(ratio)
+  if (!isFinite(n)) return false
+  for (var i = 0; i < SNAP_RATIOS.length; i++) {
+    if (Math.abs(n - SNAP_RATIOS[i]) < 0.001) return true
+  }
+  return false
+}
+
+// ---------------------------------------------------- geometry -> tree
+//
+// Rebuild a layout tree from windows that are already on screen, so a
+// workspace arranged by hand can be captured as a profile.
+//
+// This is the inverse of layoutRects. Hyprland's dwindle layout is a binary
+// tree, so any set of tiled windows can be separated by one straight cut
+// across the whole area, with each side cut again the same way. Every cut is
+// found from the windows themselves, so a divider left at 37% is stored as
+// 0.37 rather than being rounded to the nearest preset.
+//
+// Offsets never have to be subtracted anywhere: each level measures against
+// the bounding box of the windows it was given, so the bar's reserved strip,
+// gaps_out and any monitor offset are outside the outermost box and simply
+// never enter the arithmetic. gaps_in falls out the same way — it is the space
+// between the two halves, and it is read off and taken out of the span.
+
+// How far apart two edges may be and still count as the same cut line. Window
+// borders and Hyprland's own rounding put neighbouring edges a pixel or two
+// out of true.
+var CUT_SLACK = 6
+
+// How far a captured divider may sit from a snap fraction and still be taken
+// as meaning it. Gaps, borders and Hyprland's rounding put a hand-made half at
+// 0.4989; storing that back verbatim would show a layout that is visibly a
+// half as a divider parked just off one, and every later edit would inherit
+// the error. Measured in real pixels, so it does not tighten on a big monitor.
+var CAPTURE_SNAP_PX = 8
+
+function boxBounds(boxes) {
+  var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+  for (var i = 0; i < boxes.length; i++) {
+    var b = boxes[i]
+    if (b.x < x0) x0 = b.x
+    if (b.y < y0) y0 = b.y
+    if (b.x + b.w > x1) x1 = b.x + b.w
+    if (b.y + b.h > y1) y1 = b.y + b.h
+  }
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+}
+
+// Every place a straight line can separate `boxes` into two non-empty groups
+// without passing through any of them. Candidate lines are the far edges of
+// the boxes: a clean cut always runs along one of them.
+function cutsAlong(boxes, vertical) {
+  var out = []
+  var seen = {}
+
+  for (var i = 0; i < boxes.length; i++) {
+    var edge = vertical ? boxes[i].x + boxes[i].w : boxes[i].y + boxes[i].h
+    if (seen[edge]) continue
+    seen[edge] = true
+
+    var near = [], far = [], clean = true
+    for (var j = 0; j < boxes.length; j++) {
+      var box = boxes[j]
+      var end = vertical ? box.x + box.w : box.y + box.h
+      var start = vertical ? box.x : box.y
+
+      if (end <= edge + CUT_SLACK) near.push(box)
+      else if (start >= edge - CUT_SLACK) far.push(box)
+      else { clean = false; break }   // straddles the line
+    }
+
+    if (clean && near.length > 0 && far.length > 0) out.push({ a: near, b: far })
+  }
+  return out
+}
+
+// Splits a group that has no clean cut — overlapping windows, which tiling
+// should not produce but a stray floating one would. Sorting by position and
+// halving keeps every window in the result instead of dropping the ones that
+// would not fit a tree.
+function forceCut(boxes, vertical) {
+  var sorted = boxes.slice().sort(function (l, r) {
+    return (vertical ? l.x - r.x : l.y - r.y)
+  })
+  var half = Math.ceil(sorted.length / 2)
+  return { a: sorted.slice(0, half), b: sorted.slice(half) }
+}
+
+function treeFromBoxes(boxes) {
+  if (!boxes || boxes.length === 0) return leaf("")
+  if (boxes.length === 1) return leaf(boxes[0].app, boxes[0].args)
+
+  var best = null
+
+  for (var d = 0; d < 2; d++) {
+    var vertical = d === 0
+    var options = cutsAlong(boxes, vertical)
+
+    for (var i = 0; i < options.length; i++) {
+      var ra = boxBounds(options[i].a)
+      var rb = boxBounds(options[i].b)
+
+      var first = vertical ? ra.w : ra.h
+      var total = vertical ? (rb.x + rb.w) - ra.x : (rb.y + rb.h) - ra.y
+      // The real gap between the halves, taken out of the span exactly the way
+      // layoutRects puts it back in.
+      var gap = Math.max(0, vertical ? rb.x - (ra.x + ra.w) : rb.y - (ra.y + ra.h))
+      var span = total - gap
+      var ratio = span > 0
+        ? snapRatio(first / span, CAPTURE_SNAP_PX / span)
+        : 0.5
+
+      // Of several valid cuts prefer the most even one. They all draw the same
+      // picture, but a balanced tree is the one that reads sensibly when the
+      // panes are later moved around by hand.
+      var score = Math.abs(ratio - 0.5)
+      if (best === null || score < best.score) {
+        best = { score: score, dir: vertical ? "v" : "h", ratio: ratio,
+                 a: options[i].a, b: options[i].b }
+      }
+    }
+  }
+
+  if (best === null) {
+    var rect = boxBounds(boxes)
+    var vertical2 = rect.w >= rect.h
+    var forced = forceCut(boxes, vertical2)
+    best = { dir: vertical2 ? "v" : "h", ratio: 0.5, a: forced.a, b: forced.b }
+  }
+
+  return {
+    type: "split",
+    dir: best.dir,
+    ratio: clampRatio(best.ratio),
+    a: treeFromBoxes(best.a),
+    b: treeFromBoxes(best.b)
+  }
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     WORKSPACES: WORKSPACES, leaf: leaf, isSplit: isSplit, clampRatio: clampRatio,
+    SNAP_RATIOS: SNAP_RATIOS, snapRatio: snapRatio, isSnapped: isSnapped,
+    boxBounds: boxBounds, treeFromBoxes: treeFromBoxes,
     normalizeNode: normalizeNode, nodeAt: nodeAt, replaceAt: replaceAt, layoutRects: layoutRects,
     isAncestor: isAncestor, leafPaths: leafPaths, splitAt: splitAt, removeAt: removeAt,
     setAppAt: setAppAt, setArgsAt: setArgsAt, setRatioAt: setRatioAt, swap: swap,
