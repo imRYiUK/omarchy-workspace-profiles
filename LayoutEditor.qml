@@ -160,7 +160,10 @@ Item {
       width: modelData.w
       height: modelData.h
       radius: Style.cornerRadius > 0 ? root.gap / 2 : 0
-      color: Util.alpha(Color.accent, dividerMouse.pressed ? 0.75 : (dividerMouse.containsMouse ? 0.4 : 0))
+      // Faint but present at rest. At alpha 0 a divider could only be found by
+      // sweeping the pointer and watching for the cursor to change, which made
+      // resizing a hunt and lit up every pane it crossed on the way.
+      color: Util.alpha(Color.accent, dividerMouse.pressed ? 0.75 : (dividerMouse.containsMouse ? 0.4 : 0.16))
 
       Behavior on color { ColorAnimation { duration: 110 } }
 
@@ -169,8 +172,8 @@ Item {
         // Reaches past the painted divider so a 5px gap is still an easy
         // target; the extra width is invisible and overlaps the panes.
         anchors.centerIn: parent
-        width: divider.vertical ? Math.max(divider.width, Style.space(11)) : divider.width
-        height: divider.vertical ? divider.height : Math.max(divider.height, Style.space(11))
+        width: divider.vertical ? Math.max(divider.width, Style.space(16)) : divider.width
+        height: divider.vertical ? divider.height : Math.max(divider.height, Style.space(16))
         hoverEnabled: true
         preventStealing: true
         cursorShape: divider.vertical ? Qt.SplitHCursor : Qt.SplitVCursor
