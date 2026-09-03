@@ -184,11 +184,18 @@ Item {
         // two from drifting apart over a long drag.
         function applyFromPoint(mx, my) {
           var point = mapToItem(root, mx, my)
-          var span = divider.vertical ? divider.modelData.spanW : divider.modelData.spanH
+
+          // The inverse of what layoutRects did, gap included. It lays the
+          // first half out across `span - gap` and then puts the divider's
+          // near edge at its end, so a ratio read back off the full span, from
+          // the pointer sitting at the divider's centre, lands short by half a
+          // gap -- little at the middle, growing towards either end, and enough
+          // for the divider to visibly trail the cursor.
+          var span = (divider.vertical ? divider.modelData.spanW : divider.modelData.spanH) - root.gap
           if (span <= 0) return
-          var offset = divider.vertical
+          var offset = (divider.vertical
             ? point.x - divider.modelData.originX
-            : point.y - divider.modelData.originY
+            : point.y - divider.modelData.originY) - root.gap / 2
           root.setRatio(divider.modelData.path, offset / span)
         }
 
