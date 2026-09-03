@@ -205,6 +205,38 @@ test("a workspace can be dragged to any slot in the sequence", () => {
   assert.deepStrictEqual(M.moveInSequenceTo({ sequence: [1, 3, 5] }, 3, 9).sequence, [1, 3, 5], "out of range")
 })
 
+// ---- moving a layout to another workspace
+
+test("dragging a tab onto another swaps the two workspaces' layouts", () => {
+  const profile = M.normalizeProfile({
+    id: "p", name: "P", sequence: [3, 4],
+    workspaces: { "3": { root: leaf("chat") }, "4": { root: leaf("files") } }
+  })
+  M.swapWorkspaces(profile, 3, 4)
+  assert.strictEqual(apps(profile.workspaces["3"].root), "files")
+  assert.strictEqual(apps(profile.workspaces["4"].root), "chat")
+  assert.deepStrictEqual(profile.sequence, [3, 4], "both are still built, in the same slots")
+})
+
+test("dragging a tab onto an empty workspace moves the layout and empties the source", () => {
+  const profile = M.normalizeProfile({
+    id: "p", name: "P", sequence: [3],
+    workspaces: { "3": { root: leaf("chat") } }
+  })
+  M.swapWorkspaces(profile, 3, 7)
+  assert.strictEqual(profile.workspaces["3"], undefined, "the source is left unconfigured")
+  assert.strictEqual(apps(profile.workspaces["7"].root), "chat")
+})
+
+test("the launch order still names exactly the configured workspaces after a swap", () => {
+  const profile = M.normalizeProfile({
+    id: "p", name: "P", sequence: [1, 3],
+    workspaces: { "1": { root: leaf("a") }, "3": { root: leaf("b") } }
+  })
+  M.swapWorkspaces(profile, 3, 5)
+  assert.deepStrictEqual(profile.sequence, [1, 5], "3 drops out where it was, 5 takes the trailing slot")
+})
+
 // ---- the store
 
 test("a store read off disk is coerced into shape", () => {

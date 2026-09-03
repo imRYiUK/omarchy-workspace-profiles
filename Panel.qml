@@ -163,6 +163,17 @@ Panel {
     withProfile(function(profile) { Model.moveInSequenceTo(profile, workspaceId, index) })
   }
 
+  // Drag a tab onto another to carry that layout across: the workspaces are
+  // keyed by number, so this swaps two keys and touches no pane. withProfile
+  // runs syncSequence for us, so the launch order follows. The open tab trails
+  // the layout you dragged — after 3 onto 4, you are looking at 4.
+  function swapWorkspaceLayouts(from, to) {
+    if (from === to) return
+    withProfile(function(profile) { Model.swapWorkspaces(profile, from, to) })
+    root.currentWorkspace = to
+    root.selectedPath = []
+  }
+
   function setTree(tree) {
     withProfile(function(profile) {
       profile.workspaces[String(root.currentWorkspace)] = { root: tree }
@@ -827,63 +838,123 @@ Panel {
           width: parent.width
           height: Style.space(26)
 
-          Row {
+          // The tabs pick which layout you are editing, and drag onto each
+          // other to move a layout to another workspace — drop 3 on 4 and the
+          // two swap which number they are keyed under. One MouseArea over the
+          // whole strip and the swap only on release, same as the launch order
+          // below and for the same reason: a rekey mid-drag would rebuild the
+          // tabs under the pointer and destroy the grab. A press that never
+          // moved is still just a click.
+          Item {
+            id: tabStrip
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(4)
+            width: tabRow.width
+            height: Style.space(24)
 
-            Repeater {
-              model: Model.WORKSPACES
+            readonly property real step: Style.space(58) + tabRow.spacing
 
-              Rectangle {
-                id: tab
-                required property int modelData
+            function slotAt(x) {
+              var slot = Math.floor(x / step)
+              return Math.max(0, Math.min(Model.WORKSPACES.length - 1, slot))
+            }
 
-                readonly property bool current: tab.modelData === root.currentWorkspace
-                readonly property string summary: Model.workspaceSummary(root.activeProfile, tab.modelData)
+            Row {
+              id: tabRow
+              spacing: Style.space(4)
 
-                width: Style.space(58)
-                height: Style.space(24)
-                radius: Style.cornerRadius > 0 ? Style.space(5) : 0
-                color: Util.alpha(Color.foreground, tab.current ? 0.16 : (tabMouse.containsMouse ? 0.08 : 0.03))
-                border.width: 1
-                border.color: tab.current ? Util.alpha(Color.accent, 0.8) : Util.alpha(Color.foreground, 0.12)
+              Repeater {
+                model: Model.WORKSPACES
 
-                Row {
-                  anchors.centerIn: parent
-                  spacing: Style.space(5)
+                Rectangle {
+                  id: tab
+                  required property int index
+                  required property int modelData
 
-                  Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: String(tab.modelData)
-                    color: Color.foreground
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.bodySmall
-                  }
+                  readonly property bool current: tab.modelData === root.currentWorkspace
+                  readonly property bool lifted: tabMouse.grabbed === tab.index
+                  readonly property string summary: Model.workspaceSummary(root.activeProfile, tab.modelData)
 
-                  // A dot rather than a count: the tab only needs to say
-                  // "something is set up here", the canvas says what.
-                  Rectangle {
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: tab.summary !== ""
-                    width: Style.space(5)
-                    height: Style.space(5)
-                    radius: width / 2
-                    color: Util.alpha(Color.foreground, 0.6)
-                  }
-                }
+                  width: Style.space(58)
+                  height: Style.space(24)
+                  radius: Style.cornerRadius > 0 ? Style.space(5) : 0
+                  opacity: tab.lifted ? 0.45 : 1
+                  color: Util.alpha(Color.foreground, tab.current ? 0.16 : (tabMouse.hovered === tab.index ? 0.08 : 0.03))
+                  border.width: 1
+                  border.color: tab.current ? Util.alpha(Color.accent, 0.8) : Util.alpha(Color.foreground, 0.12)
 
-                MouseArea {
-                  id: tabMouse
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: {
-                    root.currentWorkspace = tab.modelData
-                    root.selectedPath = []
+                  Row {
+                    anchors.centerIn: parent
+                    spacing: Style.space(5)
+
+                    Text {
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: String(tab.modelData)
+                      color: Color.foreground
+                      font.family: Style.font.family
+                      font.pixelSize: Style.font.bodySmall
+                    }
+
+                    // A dot rather than a count: the tab only needs to say
+                    // "something is set up here", the canvas says what.
+                    Rectangle {
+                      anchors.verticalCenter: parent.verticalCenter
+                      visible: tab.summary !== ""
+                      width: Style.space(5)
+                      height: Style.space(5)
+                      radius: width / 2
+                      color: Util.alpha(Color.foreground, 0.6)
+                    }
                   }
                 }
               }
+            }
+
+            // Where the tab being dragged would land.
+            Rectangle {
+              visible: tabMouse.grabbed >= 0 && tabMouse.target !== tabMouse.grabbed
+              x: tabMouse.target * tabStrip.step - Style.space(3)
+              y: 0
+              width: Style.space(2)
+              height: parent.height
+              color: Color.accent
+            }
+
+            MouseArea {
+              id: tabMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              preventStealing: true
+              cursorShape: grabbed >= 0 ? Qt.ClosedHandCursor : Qt.PointingHandCursor
+
+              property int grabbed: -1
+              property int target: -1
+              property int hovered: -1
+
+              onPressed: function(mouse) {
+                grabbed = tabStrip.slotAt(mouse.x)
+                target = grabbed
+              }
+              onPositionChanged: function(mouse) {
+                hovered = tabStrip.slotAt(mouse.x)
+                if (grabbed >= 0) target = tabStrip.slotAt(mouse.x)
+              }
+              onReleased: {
+                if (grabbed >= 0 && target >= 0) {
+                  var from = Model.WORKSPACES[grabbed]
+                  // A press that never moved is a click: open that workspace.
+                  if (target === grabbed) {
+                    root.currentWorkspace = from
+                    root.selectedPath = []
+                  } else {
+                    root.swapWorkspaceLayouts(from, Model.WORKSPACES[target])
+                  }
+                }
+                grabbed = -1
+                target = -1
+              }
+              onExited: hovered = -1
+              onCanceled: { grabbed = -1; target = -1; hovered = -1 }
             }
           }
 
