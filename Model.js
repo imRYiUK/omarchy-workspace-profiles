@@ -384,6 +384,21 @@ function moveInSequenceTo(profile, workspaceId, index) {
   return profile
 }
 
+// Move a layout from one workspace to another by swapping the two keys in
+// profile.workspaces — the tabs are keyed by workspace number, so nothing in a
+// pane has to move. A drop onto an empty workspace is a swap with nothing,
+// which is just a move. syncSequence afterwards keeps the launch order naming
+// exactly the workspaces that now have something on them.
+function swapWorkspaces(profile, a, b) {
+  var ka = String(a), kb = String(b)
+  if (ka === kb) return profile
+  var wa = profile.workspaces[ka]
+  var wb = profile.workspaces[kb]
+  if (wa) profile.workspaces[kb] = wa; else delete profile.workspaces[kb]
+  if (wb) profile.workspaces[ka] = wb; else delete profile.workspaces[ka]
+  return syncSequence(profile)
+}
+
 function normalizeProfile(raw) {
   var profile = newProfile(
     String((raw && raw.id) || "profile"),
@@ -642,7 +657,7 @@ if (typeof module !== "undefined" && module.exports) {
     setAppAt: setAppAt, setArgsAt: setArgsAt, setRatioAt: setRatioAt, swap: swap,
     flipAt: flipAt,
     assignApp: assignApp, movePane: movePane, pathAfterRemoval: pathAfterRemoval,
-    syncSequence: syncSequence, moveInSequenceTo: moveInSequenceTo,
+    syncSequence: syncSequence, moveInSequenceTo: moveInSequenceTo, swapWorkspaces: swapWorkspaces,
     filledLeaves: filledLeaves, isConfigured: isConfigured, workspaceSummary: workspaceSummary,
     emptyWorkspace: emptyWorkspace, newProfile: newProfile, normalizeProfile: normalizeProfile,
     normalizeStore: normalizeStore, profileById: profileById, profileIndex: profileIndex,
