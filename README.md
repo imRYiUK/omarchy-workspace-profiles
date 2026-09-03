@@ -13,7 +13,7 @@ The layouts are real tiling layouts, not floating windows placed by hand. What
 you draw on the canvas is the dwindle tree Hyprland ends up with, ratios and
 all, so the result is something you can go on using with your normal keybinds.
 
-- **Five workspaces, any number of profiles** — a morning one, a work one, one
+- **Nine workspaces, any number of profiles** — a morning one, a work one, one
   for whatever you are shipping this week.
 - **Apps with their arguments**, so a pane is "Chromium on the dashboard" or
   "a terminal running btop", not just "Chromium".
@@ -51,13 +51,17 @@ omarchy plugin remove io.github.imryiuk.workspace-profiles
 - **Profiles** run along the top. `+` makes another, `Rename` renames the one
   you are on, `Delete` appears once there is more than one, and a dot on a chip
   marks the profile that runs at login.
-- **Workspaces 1–5** are the row below. A dot means something is set up there,
-  and `Clear workspace` empties the one you are on.
+- **Workspaces 1–9** are the row below. A dot means something is set up there,
+  and `Clear workspace` empties the one you are on. Drag a tab onto another to
+  move that layout across — drop 3 on 4 and the two swap which workspace they
+  are on.
 - **Search for an app** on the left, then either click it onto the selected pane
   or drag it onto any pane. Where you let go on the pane decides the split:
 - **Split a pane** with the `◫` buttons that appear when you hover it — the
-  first splits side by side, the second top and bottom. `✕` removes a pane and
-  gives its space back to its neighbour.
+  first splits side by side, the second top and bottom. `⇄` flips the split the
+  pane sits in, so two columns become two rows. `✕` removes a pane and gives its
+  space back to its neighbour. On a pane too small for the full row, the controls
+  fall back to `✕` alone.
 - **Drag a divider** to set how the space is shared. The drag is continuous —
   a pane you want at 37% goes to 37% — but passing near a quarter, third or
   half lands on it exactly, and the divider goes solid to say so. Hold `Ctrl`
@@ -112,14 +116,17 @@ of those is reported next to the button.
 
 **Save** writes the profile down. It does not touch the desktop you are on —
 the layout opens on its own at your next login, the way an i3 config takes hold
-when i3 restarts. To build it into the running session there and then, right
-click the bar icon, or bind a key (below); both are deliberate, made from
-outside the editor. Edits are also saved on their own a moment after you make
+when i3 restarts. Edits are also saved on their own a moment after you make
 them, so Save is really just the "and I mean it" button.
 
-Keyboard, while the editor is open: `1`–`5` switch workspace, arrows move
-between panes, `s` and `S` split the selected pane, `x` removes it, `/` jumps to
-the search box, `a` saves, `Esc` closes.
+**Run** builds the profile into the running session there and then, without
+waiting for a login. A workspace that already has windows is left alone, so it
+fills the empty ones and says which it skipped. The same run is on a right click
+of the bar icon, or a key you bind (below).
+
+Keyboard, while the editor is open: `1`–`9` switch workspace, arrows move
+between panes, `s` and `S` split the selected pane, `f` flips the split it sits
+in, `x` removes it, `/` jumps to the search box, `a` saves, `Esc` closes.
 
 ### Test
 
@@ -321,9 +328,8 @@ reload.
 
 ## Not there yet
 
-Per-pane float and fullscreen, workspaces beyond 5, multi-monitor placement,
-"save my current desktop as a profile", and exporting profiles. The data model
-has room for all of them.
+Per-pane float and fullscreen, workspaces beyond 9, multi-monitor placement, and
+exporting profiles. The data model has room for all of them.
 
 ## License
 
