@@ -471,6 +471,14 @@ Panel {
     return themed.length > 0 ? themed : Quickshell.iconPath("application-x-executable", true)
   }
 
+  // The freedesktop desktop-file-id shape the launcher enforces before it will
+  // open a pane (bin/workspace-profiles-apply:is_app_id). An id it would refuse
+  // — most often a .desktop filename with a space in it — is dropped here rather
+  // than saved into a profile that fails silently at the next login.
+  function isLaunchableId(id) {
+    return /^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(String(id || ""))
+  }
+
   // Name match first, then anything else the entry mentions — so typing
   // "chrom" puts Chromium above an app that merely lists it as a keyword.
   function searchApps(query) {
@@ -482,6 +490,7 @@ Panel {
     for (var i = 0; i < values.length; i++) {
       var entry = values[i]
       if (entry.noDisplay) continue
+      if (!isLaunchableId(entry.id)) continue
 
       var name = String(entry.name || entry.id || "")
       var row = { id: String(entry.id), name: name, icon: appIconFor(entry) }

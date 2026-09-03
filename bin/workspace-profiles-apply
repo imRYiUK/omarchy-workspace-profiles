@@ -717,7 +717,7 @@ run_test() {
 build_workspace() {
   local ws="$1" tree="$2"
   local -A window_of=()
-  local op from pane dir ratio app args before addr new_addr
+  local op from pane dir ratio app args before addr new_addr untiled
   local launched=0 failed=0
 
   local plan
@@ -733,20 +733,27 @@ build_workspace() {
   while IFS=$'\t' read -r op from pane dir ratio app args; do
     [[ -z ${op:-} ]] && continue
 
+    # A split whose seed pane never opened still launches — untiled, for dwindle
+    # to fold into whatever is there — rather than being dropped. Dropping it
+    # took every later pane that would have split off it with it, which is how
+    # one rejected seed left a whole workspace empty. Only the preselect and the
+    # ratio nudge are skipped. Reset per step so it does not carry over.
+    untiled=0
+
     if [[ $op == split ]]; then
       addr="${window_of[$from]:-}"
       if [[ -z $addr ]]; then
-        log "  ! no window for pane '$from', skipping the pane it splits"
-        ((failed++))
-        continue
+        log "  ! pane '$from' never opened, launching '$app' without its split"
+        untiled=1
+      elif ! is_address "$addr" || [[ $dir != r && $dir != d ]]; then
+        # A garbage address or direction only comes from a hand-edited store.
+        # Same treatment: launch the pane untiled instead of losing its subtree.
+        log "  ! pane '$from' has no usable split to make, launching '$app' untiled"
+        untiled=1
+      else
+        dispatch "hl.dsp.focus({ window = \"address:$addr\" })"
+        dispatch "hl.dsp.layout(\"preselect $dir\")"
       fi
-      if ! is_address "$addr" || [[ $dir != r && $dir != d ]]; then
-        log "  ! pane '$from' has no usable split to make, skipping it"
-        ((failed++))
-        continue
-      fi
-      dispatch "hl.dsp.focus({ window = \"address:$addr\" })"
-      dispatch "hl.dsp.layout(\"preselect $dir\")"
     fi
 
     notify_step "$profile_name is opening" "$(app_display_name "$app") on workspace $ws…"
@@ -763,6 +770,9 @@ build_workspace() {
     if ! new_addr="$(wait_for_window "$ws" "$before")"; then
       log "  ! $app never opened a window, continuing without it"
       ((failed++))
+      # Kept by name, not just counted: the login notification says which app
+      # never came up, so a silent empty workspace points at its own cause.
+      failed_apps+=("$(app_display_name "$app")")
       # A preselect armed for a window that never arrived stays armed, but every
       # later split re-arms it before launching, and a seed lands on an empty
       # workspace where there is nothing to split — so it cannot misplace anything.
@@ -773,7 +783,7 @@ build_workspace() {
     ((launched++))
     log "  + $app${args:+ $args}"
 
-    if [[ $op == split ]]; then
+    if [[ $op == split ]] && ((!untiled)); then
       apply_ratio "${window_of[$from]}" "$new_addr" "$dir" "$ratio"
     fi
   done <<<"$plan"
@@ -862,6 +872,10 @@ fi
 
 skipped=()
 built=()
+# Display names of apps that never opened a window, filled in by build_workspace.
+# A login notification that only ever said "3 failed" — in a toast nobody
+# rereads — is what let an empty workspace go unexplained; the names go in it.
+failed_apps=()
 
 for ws in $workspaces; do
   tree="$(jq -c --arg w "$ws" '.workspaces[$w]' <<<"$profile")"
@@ -894,7 +908,12 @@ if ((${#built[@]})); then
   dispatch "hl.dsp.focus({ workspace = \"${built[0]}\" })"
 fi
 
-if ((${#skipped[@]} && !${#built[@]})); then
+if ((${#failed_apps[@]})); then
+  # A failure outranks the "all set" line: name the app that never came up so
+  # the missing panes point at their own cause instead of being a mystery.
+  names="$(printf '%s, ' "${failed_apps[@]}" | sed 's/, $//')"
+  notify_send "$profile_name is ready" "$names never opened, so that workspace is missing panes."
+elif ((${#skipped[@]} && !${#built[@]})); then
   if ((${#skipped[@]} == 1)); then
     notify_send "$profile_name was already open" \
       "Workspace ${skipped[0]} had windows, so nothing was opened."

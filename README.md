@@ -128,6 +128,10 @@ actually open a window? Wrong arguments are the failure worth catching — a
 browser given a malformed URL, a terminal given a command that is not installed
 — and otherwise they only show up at your next login.
 
+What it does not check is that the layout builds. A green Test says every app
+starts, not that the workspace assembled — so a space that came up empty with a
+green Test failed at the layout step, and that is where to look, not the apps.
+
 It runs **out of sight**. Every app is started on a special workspace, which
 Hyprland only renders while it is toggled open, so the windows really open, are
 really checked, and are really closed again without the desktop you are looking
