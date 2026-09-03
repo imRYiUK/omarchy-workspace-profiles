@@ -221,17 +221,23 @@ Item {
     anchors.right: parent.right
     anchors.margins: Style.space(4)
     spacing: Style.space(2)
-    visible: root.roomy && (cardMouse.containsMouse || root.selected)
+    visible: cardMouse.containsMouse || root.selected
     opacity: visible ? 1 : 0
 
     Behavior on opacity { NumberAnimation { duration: 110 } }
 
     Repeater {
-      model: [
-        { glyph: "◫", rotate: 0,  name: "split-v" },
-        { glyph: "◫", rotate: 90, name: "split-h" },
-        { glyph: "✕", rotate: 0,  name: "remove" }
-      ]
+      // Below the roomy threshold only ✕ survives. Splitting is what makes a
+      // pane small, so hiding the whole row there hides the one control that
+      // undoes the split -- and an empty pane cannot be dragged away either,
+      // which left a mis-split with no way out that used a mouse.
+      model: root.roomy
+        ? [
+            { glyph: "◫", rotate: 0,  name: "split-v" },
+            { glyph: "◫", rotate: 90, name: "split-h" },
+            { glyph: "✕", rotate: 0,  name: "remove" }
+          ]
+        : [{ glyph: "✕", rotate: 0, name: "remove" }]
 
       Rectangle {
         id: paneButton
