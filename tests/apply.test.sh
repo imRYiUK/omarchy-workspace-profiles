@@ -141,5 +141,33 @@ out="$(run_live "" --profile morning)"
 check "a built workspace is where you land" "$(cat "$tmp/dispatched")" \
   'hl.dsp.focus({ workspace = "1" })'
 
+# A seed pane that never opens — here an id the launcher refuses — used to take
+# every pane that would have split off it down too, and the workspace came up
+# empty. Now the rest still launch, untiled, for dwindle to fold into place.
+cat >"$tmp/badseed.json" <<'EOF'
+{
+  "version": 1,
+  "activeProfile": "broken",
+  "profiles": [{
+    "id": "broken",
+    "name": "Broken",
+    "sequence": [2],
+    "workspaces": {
+      "2": { "root": { "type": "split", "dir": "v", "ratio": 0.5,
+        "a": { "type": "leaf", "app": "Google Messages", "args": "" },
+        "b": { "type": "leaf", "app": "chromium", "args": "" } } }
+    }
+  }]
+}
+EOF
+out="$(PATH="$tmp/stub:$PATH" FAKE_COMPOSITOR_AGE=6 FAKE_OCCUPIED="" \
+  FAKE_DISPATCH_LOG="$tmp/dispatched" XDG_RUNTIME_DIR="$tmp/run" \
+  WORKSPACE_PROFILES_STORE="$tmp/badseed.json" \
+  "$APPLY" --no-notify --timeout 1 --profile broken 2>&1)"
+check "a missing seed still launches the panes below it" "$out" \
+  "launching 'chromium' without its split"
+check "a missing seed does not drop the rest of the workspace" "$out" \
+  "skipping the pane it splits" lacks
+
 printf '%d passed, %d failed\n' "$passed" "$failed"
 ((failed == 0))
