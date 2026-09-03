@@ -243,6 +243,18 @@ Panel {
     savedHintTimer.restart()
   }
 
+  // Builds the profile into the running session now instead of waiting for a
+  // login. The launcher leaves any workspace that already has windows alone, so
+  // this fills the empty ones and cannot disturb what is already open.
+  function runNow() {
+    if (!activeProfile) return
+    persistNow()
+
+    var argv = [root.applyScript, "--profile", String(activeId)]
+    if (!notifyOnApply) argv.push("--no-notify")
+    Util.execArgv(argv)
+  }
+
   // Checks every app starts, on a hidden workspace, then closes what it opened
   // and notifies. Nothing on screen changes while it runs.
   function testNow() {
@@ -409,6 +421,7 @@ Panel {
         if (text >= "1" && text <= "9") root.currentWorkspace = parseInt(text)
         else if (text === "s") editor.split(root.selectedPath, "v")
         else if (text === "S") editor.split(root.selectedPath, "h")
+        else if (text === "f" || text === "F") editor.flip(root.selectedPath)
         else if (text === "/") appSearch.searchField.forceActiveFocus()
         else if (text === "a" || text === "A") root.applyNow()
       }
@@ -549,6 +562,15 @@ Panel {
                 ? Color.urgent : Util.alpha(Color.foreground, 0.6)
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
+            }
+
+            Button {
+              text: "Run"
+              tooltipText: "Build this profile into the running session now. Workspaces that already have windows are left alone"
+              visible: !root.renaming
+              horizontalPadding: Style.space(9)
+              verticalPadding: Style.space(3)
+              onClicked: root.runNow()
             }
 
             Button {

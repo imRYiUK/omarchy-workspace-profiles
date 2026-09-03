@@ -23,6 +23,8 @@ Item {
   readonly property bool filled: appId !== ""
   readonly property bool selected: !!host && !!pane && host.selectedKey === pane.key
   readonly property bool roomy: width > Style.space(70) && height > Style.space(40)
+  // A fourth button needs the width for it; below this the row drops flip first.
+  readonly property bool wide: width > Style.space(92) && height > Style.space(40)
   // Which side of this pane an incoming drag would take, from where the pointer
   // is over it. The four edges are the four triangles the diagonals cut the pane
   // into, so aiming at a side is aiming at the half that side will become; the
@@ -117,6 +119,7 @@ Item {
       if (action === "" || !root.host) return
       if (action === "split-v") root.host.split(root.path, "v")
       else if (action === "split-h") root.host.split(root.path, "h")
+      else if (action === "flip") root.host.flip(root.path)
       else root.host.remove(root.path)
     }
   }
@@ -227,17 +230,24 @@ Item {
     Behavior on opacity { NumberAnimation { duration: 110 } }
 
     Repeater {
-      // Below the roomy threshold only ✕ survives. Splitting is what makes a
-      // pane small, so hiding the whole row there hides the one control that
-      // undoes the split -- and an empty pane cannot be dragged away either,
-      // which left a mis-split with no way out that used a mouse.
-      model: root.roomy
+      // Three tiers, dropping the least essential control first. Splitting is
+      // what makes a pane small, so hiding the whole row on a small pane hides
+      // the one control that undoes the split -- and an empty pane cannot be
+      // dragged away either, which left a mis-split with no way out by mouse.
+      model: root.wide
         ? [
             { glyph: "◫", rotate: 0,  name: "split-v" },
             { glyph: "◫", rotate: 90, name: "split-h" },
+            { glyph: "⇄", rotate: 0,  name: "flip" },
             { glyph: "✕", rotate: 0,  name: "remove" }
           ]
-        : [{ glyph: "✕", rotate: 0, name: "remove" }]
+        : root.roomy
+          ? [
+              { glyph: "◫", rotate: 0,  name: "split-v" },
+              { glyph: "◫", rotate: 90, name: "split-h" },
+              { glyph: "✕", rotate: 0,  name: "remove" }
+            ]
+          : [{ glyph: "✕", rotate: 0, name: "remove" }]
 
       Rectangle {
         id: paneButton

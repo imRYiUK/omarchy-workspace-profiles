@@ -69,6 +69,13 @@ Item {
     selectionChanged(path.length ? path.slice(0, -1) : [])
   }
 
+  // Flips the split this pane sits in, so two columns become two rows. It acts
+  // on the parent: the pane itself is a leaf and has no direction to flip.
+  function flip(path) {
+    if (!path || !path.length) return
+    treeEdited(Model.flipAt(tree, path.slice(0, -1)))
+  }
+
   function setRatio(path, ratio) {
     treeEdited(Model.setRatioAt(tree, path, ratio))
   }
