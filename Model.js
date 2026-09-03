@@ -16,8 +16,11 @@
 // the split taken by child `a`.
 
 var WORKSPACES = [1, 2, 3, 4, 5, 6, 7, 8, 9]
-var MIN_RATIO = 0.15
-var MAX_RATIO = 0.85
+// Wide enough to be a deliberate choice rather than a slip. A pane at 0.05 is
+// still a usable strip for a palette or a monitor, and stopping the drag at
+// 0.15 made the canvas feel like it was fighting back.
+var MIN_RATIO = 0.05
+var MAX_RATIO = 0.95
 
 function clone(node) {
   return JSON.parse(JSON.stringify(node))
