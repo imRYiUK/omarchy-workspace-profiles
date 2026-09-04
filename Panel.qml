@@ -975,7 +975,7 @@ Panel {
             }
 
             Button {
-              text: "Clear workspace"
+              text: "Clear"
               visible: Model.isConfigured(root.currentWorkspaceData)
               horizontalPadding: Style.space(9)
               verticalPadding: Style.space(3)
